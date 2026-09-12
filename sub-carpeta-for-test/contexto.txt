@@ -1,1 +1,13 @@
 # Contexto del proyecto
+
+## Audio
+- Carpeta `audio/` con `sound.js`: efectos generados con Web Audio API (sin archivos externos).
+- API global: `window.SnakeSound` con `eat()`, `gold()`, `gameOver()`, `levelUp()`.
+- `snake.js` llama a estos sonidos al comer, comer comida dorada, subir de nivel y en Game Over.
+- `index.html` y `snake.html` cargan `audio/sound.js` antes de `snake.js`.
+
+## Estado / verificación
+- Audio revisado y corregido: el AudioContext no arrancaba porque los navegadores exigen un gesto del usuario. Se añadió un desbloqueo en `audio/sound.js` que crea/reanuda el contexto en la primera interacción (keydown, pointerdown o touchstart).
+- `snake.html` actualizado: se añadió `<span id="level">` al HUD para que coincida con `index.html` (snake.js ya lo actualiza si existe).
+- Verificado que `snake.js` llama a los sonidos de forma segura (`if (window.SnakeSound)`) al comer, comer dorada, subir nivel y Game Over.
+- El audio empieza a funcionar tras la primera tecla, clic o toque (limitación estándar de los navegadores).

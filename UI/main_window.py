@@ -22,8 +22,8 @@ import os
 import sys
 import shlex
 
-from PySide6.QtCore import Qt, QMimeData, QPoint, Signal, QProcess
-from PySide6.QtGui import QDrag, QColor, QPainter, QFont, QAction
+from PySide6.QtCore import Qt, QMimeData, QPoint, Signal, QProcess, QSize
+from PySide6.QtGui import QDrag, QColor, QPainter, QFont, QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSplitter, QPlainTextEdit, QMenu, QFileDialog,
@@ -134,6 +134,25 @@ QTabBar::close-button:disabled { image:none; }
 QLabel#editorStatus {
     background:#1e2126; color:#5c6370; font-size:11px;
     border-top:1px solid #2b2e34; }
+QTextEdit#chatView {
+    background:#1a1c21; border:1px solid #2b2e34; border-radius:8px;
+    padding:8px; font-size:13px; }
+QPlainTextEdit {
+    background:#22242a; border:1px solid #33363c; border-radius:8px;
+    padding:6px; color:#e8eaed; font-size:13px; }
+QFrame#chatTopPanel, QFrame#chatMidPanel, QFrame#chatBottomPanel {
+    background:transparent; border:none; }
+QFrame#chatRightPanel {
+    background:#1e2126; border-left:1px solid #2b2e34; }
+QListWidget#promptNavList {
+    background:#22242a; border:1px solid #33363c; border-radius:8px;
+    padding:4px; font-size:12px; color:#b6bac1; }
+QListWidget#promptNavList::item {
+    padding:4px 6px; border-radius:4px; }
+QListWidget#promptNavList::item:hover {
+    background:#2a2d33; }
+QListWidget#promptNavList::item:selected {
+    background:#7c3aed; color:#fff; }
 QMenu#branchMenu {
     background:#22252b; border:1px solid #3a3e46; border-radius:10px;
     padding:6px; color:#d7dae0; font-size:13px; }
@@ -329,17 +348,27 @@ class HotBar(QFrame):
         # Definición de botones por defecto
         if buttons is None:
             buttons = (
-                ("p0", "1", "Panel 1"),
-                ("p1", "2", "Panel 2"),
-                ("p2", "3", "Panel 3"),
-                ("term", "⌨", "Terminal (flotante)"),
+                ("p0", "1", "Panel 1", None),
+                ("p1", "2", "Panel 2", None),
+                ("p2", "3", "Panel 3", None),
+                ("term", "⌨", "Terminal (flotante)", None),
             )
-        for key, label, tip in buttons:
+        for btn_def in buttons:
+            # Soporta (key, label, tip) o (key, label, tip, icon_path)
+            if len(btn_def) == 4:
+                key, label, tip, icon_path = btn_def
+            else:
+                key, label, tip = btn_def
+                icon_path = None
             b = QPushButton(label)
             b.setCheckable(True)
             b.setChecked(key in checked)
             b.setFixedSize(38, 38)
             b.setToolTip(tip)
+            if icon_path and os.path.exists(icon_path):
+                b.setIcon(QIcon(icon_path))
+                b.setIconSize(QSize(22, 22))
+                b.setText("")
             v.addWidget(b)
             self.btns[key] = b
         v.addStretch(1)
@@ -864,6 +893,12 @@ class MainBody(QWidget):
         self.left_zone.add_panel_widget("p2", "Panel 3", p2l)
         self.left_zone.toggle("p2", False)
 
+        # Panel de chat IA en zona izquierda
+        from UI.panels.chat_panel import ChatPanel
+        self.chat_panel = ChatPanel()
+        self.left_zone.add_panel_widget("chat", "Chat IA", self.chat_panel)
+        self.left_zone.toggle("chat", False)
+
         # Panel de archivos en zona derecha (independiente, oculto al inicio)
         self.files_panel_right = FilesPanel()
         self.right_zone.add_panel_widget("files", "Project", self.files_panel_right)
@@ -881,6 +916,11 @@ class MainBody(QWidget):
         self.right_zone.add_panel_widget("p2", "Panel 3", p2r)
         self.right_zone.toggle("p2", False)
 
+        # Panel de chat IA en zona derecha
+        self.chat_panel_right = ChatPanel()
+        self.right_zone.add_panel_widget("chat", "Chat IA", self.chat_panel_right)
+        self.right_zone.toggle("chat", False)
+
         # Terminal flotante
         self.terminal = TerminalOverlay(self)
         self.terminal.hide()
@@ -892,6 +932,9 @@ class MainBody(QWidget):
         # Conectar save_run_config de ambos paneles
         self.files_panel.save_run_config.connect(self._save_run_config)
         self.files_panel_right.save_run_config.connect(self._save_run_config)
+        # Conectar files_changed del chat → refrescar árboles
+        self.chat_panel.files_changed.connect(self.files_panel.refresh)
+        self.chat_panel.files_changed.connect(self.files_panel_right.refresh)
 
     def _run_file(self, path):
         """Ejecuta un archivo .py/.js/.java en la terminal flotante."""
@@ -979,9 +1022,11 @@ class MainBody(QWidget):
             self.terminal.hide()
 
     def set_root(self, path):
-        """Actualiza ambos paneles de archivos con la nueva carpeta."""
+        """Actualiza ambos paneles de archivos y chat con la nueva carpeta."""
         self.files_panel.set_root(path)
         self.files_panel_right.set_root(path)
+        self.chat_panel.set_repo(path)
+        self.chat_panel_right.set_repo(path)
 
 
 class UIMainWindow(QMainWindow):
@@ -1013,22 +1058,25 @@ class UIMainWindow(QMainWindow):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
+        _ia_icon = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "iconos", "ia.svg")
         self.hotbar_left = HotBar(
             side="left",
             buttons=(
-                ("files", "📁", "Panel de archivos"),
-                ("p1", "2", "Panel 2 (izq)"),
-                ("p2", "3", "Panel 3 (izq)"),
-                ("term", "⌨", "Terminal (flotante)"),
+                ("files", "📁", "Panel de archivos", None),
+                ("p1", "2", "Panel 2 (izq)", None),
+                ("p2", "3", "Panel 3 (izq)", None),
+                ("chat", "4", "Panel 4 — Chat IA (izq)", _ia_icon),
+                ("term", "⌨", "Terminal (flotante)", None),
             ),
             checked={"files"})
         self.hotbar_right = HotBar(
             side="right",
             buttons=(
-                ("files", "📁", "Panel de archivos"),
-                ("p1", "2", "Panel 2 (der)"),
-                ("p2", "3", "Panel 3 (der)"),
-                ("term", "⌨", "Terminal (flotante)"),
+                ("files", "📁", "Panel de archivos", None),
+                ("p1", "2", "Panel 2 (der)", None),
+                ("p2", "3", "Panel 3 (der)", None),
+                ("chat", "4", "Panel 4 — Chat IA (der)", _ia_icon),
+                ("term", "⌨", "Terminal (flotante)", None),
             ),
             checked=set())
         self.body = MainBody()
@@ -1046,6 +1094,8 @@ class UIMainWindow(QMainWindow):
             lambda on: self.body.left_zone.toggle("p1", on))
         self.hotbar_left.btns["p2"].toggled.connect(
             lambda on: self.body.left_zone.toggle("p2", on))
+        self.hotbar_left.btns["chat"].toggled.connect(
+            lambda on: self.body.left_zone.toggle("chat", on))
         self.hotbar_left.btns["term"].toggled.connect(
             lambda on: self.body.toggle_terminal(on))
         # Hotbar derecha → zona derecha (independiente)
@@ -1055,6 +1105,8 @@ class UIMainWindow(QMainWindow):
             lambda on: self.body.right_zone.toggle("p1", on))
         self.hotbar_right.btns["p2"].toggled.connect(
             lambda on: self.body.right_zone.toggle("p2", on))
+        self.hotbar_right.btns["chat"].toggled.connect(
+            lambda on: self.body.right_zone.toggle("chat", on))
         self.hotbar_right.btns["term"].toggled.connect(
             lambda on: self.body.toggle_terminal(on))
         # Top bar → acciones

@@ -3,10 +3,12 @@
 
 Header con título + acciones, y árbol de archivos con iconos por extensión.
 La fila de carpeta muestra nombre + ruta relativa, como IntelliJ.
+Incluye QFileSystemWatcher para auto-refrescar cuando cambian archivos.
+Muestra badges +N/-N de líneas cambiadas al lado de cada archivo.
 """
 import os
 
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer
 from PySide6.QtGui import QIcon, QKeyEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTreeWidget,
@@ -57,6 +59,9 @@ class FilesPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.root_path = ""
+        # Tracking de líneas por archivo para mostrar diffs
+        self._file_lines = {}    # path → line count (baseline)
+        self._file_diffs = {}    # path → (added, removed) neto
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -86,14 +91,15 @@ class FilesPanel(QWidget):
             head.addWidget(b)
         v.addLayout(head)
 
-        # ---- Árbol ----
+        # ---- Árbol (3 columnas: nombre, botones, diff badge) ----
         self.tree = QTreeWidget()
         self.tree.setObjectName("filesTree")
         self.tree.setHeaderHidden(True)
-        self.tree.setColumnCount(2)
+        self.tree.setColumnCount(3)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.tree.setIndentation(14)
         self.tree.setExpandsOnDoubleClick(False)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -105,11 +111,123 @@ class FilesPanel(QWidget):
         self.tree.keyPressEvent = self._tree_key_press
         v.addWidget(self.tree, 1)
 
+        # ---- File system watcher ----
+        self._watcher = QFileSystemWatcher()
+        self._watcher.directoryChanged.connect(self._on_fs_changed)
+        self._watcher.fileChanged.connect(self._on_fs_file_changed)
+        # Debounce: esperar 300ms después del último cambio antes de refrescar
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self._refresh_from_watch)
+
     # ---- API pública ----
     def set_root(self, path):
         self.root_path = path or ""
+        self._file_lines = {}
+        self._file_diffs = {}
+        self._setup_watcher()
         self.refresh()
+        # Establecer baseline de líneas después del primer refresh
+        self._update_diffs()
         self.root_changed.emit(self.root_path)
+
+    def _setup_watcher(self):
+        """Configura el QFileSystemWatcher para la carpeta actual."""
+        self._watcher.removePaths(self._watcher.files() + self._watcher.directories())
+        if not self.root_path or not os.path.isdir(self.root_path):
+            return
+        # Vigilar la carpeta raíz y todas las subcarpetas (no recursivas ignoradas)
+        dirs_to_watch = [self.root_path]
+        for dirpath, dirnames, filenames in os.walk(self.root_path):
+            dirnames[:] = [d for d in dirnames
+                          if d not in IGNORED_DIRS and not d.startswith(".")]
+            dirs_to_watch.append(dirpath)
+        # QFileSystemWatcher tiene límite de paths, vigilar solo carpetas
+        self._watcher.addPaths(dirs_to_watch)
+
+    def _on_fs_changed(self, _path):
+        """Cambio en el filesystem — debounce 300ms."""
+        self._refresh_timer.start(300)
+
+    def _on_fs_file_changed(self, path):
+        """Un archivo específico cambió — trackear diff de líneas."""
+        self._refresh_timer.start(300)
+
+    def _refresh_from_watch(self):
+        """Refresca el árbol preservando el estado de expansión y selección."""
+        if not self.root_path or not os.path.isdir(self.root_path):
+            return
+        # Guardar paths expandidos y seleccionados
+        expanded = set()
+        selected = None
+        for i in range(self.tree.topLevelItemCount()):
+            self._collect_expanded(self.tree.topLevelItem(i), expanded)
+        cur = self.tree.currentItem()
+        if cur:
+            p = cur.data(0, Qt.UserRole)
+            if p:
+                selected = p
+        # Actualizar diffs antes de refrescar
+        self._update_diffs()
+        # Refrescar
+        self.refresh()
+        # Restaurar expansión y selección
+        for i in range(self.tree.topLevelItemCount()):
+            self._restore_expanded(self.tree.topLevelItem(i), expanded)
+        if selected:
+            self._select_path(selected)
+
+    def _collect_expanded(self, item, expanded_set):
+        path = item.data(0, Qt.UserRole)
+        if path and item.isExpanded():
+            expanded_set.add(path)
+        for i in range(item.childCount()):
+            self._collect_expanded(item.child(i), expanded_set)
+
+    def _restore_expanded(self, item, expanded_set):
+        path = item.data(0, Qt.UserRole)
+        if path and path in expanded_set:
+            item.setExpanded(True)
+        for i in range(item.childCount()):
+            self._restore_expanded(item.child(i), expanded_set)
+
+    def _select_path(self, path):
+        """Selecciona el item cuyo path coincide."""
+        for i in range(self.tree.topLevelItemCount()):
+            it = self._find_item_by_path(self.tree.topLevelItem(i), path)
+            if it:
+                self.tree.setCurrentItem(it)
+                return
+
+    def _find_item_by_path(self, item, path):
+        if item.data(0, Qt.UserRole) == path:
+            return item
+        for i in range(item.childCount()):
+            r = self._find_item_by_path(item.child(i), path)
+            if r:
+                return r
+        return None
+
+    def _update_diffs(self):
+        """Compara líneas actuales vs baseline para cada archivo."""
+        if not self.root_path:
+            return
+        for dirpath, dirnames, filenames in os.walk(self.root_path):
+            dirnames[:] = [d for d in dirnames
+                          if d not in IGNORED_DIRS and not d.startswith(".")]
+            for fname in filenames:
+                fpath = os.path.join(dirpath, fname)
+                try:
+                    with open(fpath, encoding="utf-8", errors="replace") as f:
+                        lines = sum(1 for _ in f)
+                except (OSError, UnicodeDecodeError):
+                    continue
+                old = self._file_lines.get(fpath)
+                if old is not None:
+                    diff = lines - old
+                    if diff != 0:
+                        self._file_diffs[fpath] = diff
+                self._file_lines[fpath] = lines
 
     def refresh(self):
         self.tree.clear()
@@ -191,6 +309,23 @@ class FilesPanel(QWidget):
                         lambda _, p=e.path: self.save_run_config.emit(p))
                     lo.addWidget(btn_bm)
                     self.tree.setItemWidget(it, 1, btns)
+                # Badge de diff de líneas (+N / -N)
+                diff = self._file_diffs.get(e.path)
+                if diff is not None and diff != 0:
+                    badge = QLabel()
+                    if diff > 0:
+                        badge.setText(f"+{diff}")
+                        badge.setStyleSheet(
+                            "background:#22c55e33; color:#22c55e; "
+                            "border-radius:4px; padding:1px 5px; "
+                            "font-size:10px; font-weight:bold;")
+                    else:
+                        badge.setText(f"{diff}")
+                        badge.setStyleSheet(
+                            "background:#ef444433; color:#ef4444; "
+                            "border-radius:4px; padding:1px 5px; "
+                            "font-size:10px; font-weight:bold;")
+                    self.tree.setItemWidget(it, 2, badge)
 
     def _on_double(self, item, _col):
         path = item.data(0, Qt.UserRole)

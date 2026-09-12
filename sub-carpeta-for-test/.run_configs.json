@@ -7,6 +7,10 @@
     {
       "name": "test",
       "path": "/Users/nico/Desktop/cli-ia/sub-carpeta-for-test/test.js"
+    },
+    {
+      "name": "server",
+      "path": "/Users/nico/Desktop/cli-ia/sub-carpeta-for-test/server.js"
     }
   ]
 }

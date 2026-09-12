@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="38" height="38" viewBox="0 0 38 38">
+  <defs>
+    <linearGradient id="iagrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+  </defs>
+  <!-- Fondo redondeado -->
+  <rect width="38" height="38" rx="8" fill="url(#iagrad)" opacity="0.15"/>
+  <!-- Spark de IA -->
+  <path d="M19 6
+           C 21 12, 24 14, 30 15
+           C 24 16, 21 18, 19 24
+           C 17 18, 14 16, 8 15
+           C 14 14, 17 12, 19 6 Z"
+        fill="url(#iagrad)"/>
+  <!-- Punto de cursor -->
+  <circle cx="19" cy="19" r="2" fill="#a78bfa"/>
+  <!-- "IA" texto -->
+  <text x="19" y="33" text-anchor="middle" font-family="Arial" font-size="7"
+        font-weight="bold" fill="#a78bfa">IA</text>
+</svg>

@@ -86,11 +86,13 @@ function tick() {
     if (goldFood && head.x === goldFood.x && head.y === goldFood.y) {
         score += 50;
         spawnParticles(goldFood.x, goldFood.y, '#ffd166');
+        if (window.SnakeSound) SnakeSound.gold();
         goldFood = null;
         checkLevel();
     } else if (head.x === food.x && head.y === food.y) {
         score += 10;
         spawnParticles(food.x, food.y, '#ff4444');
+        if (window.SnakeSound) SnakeSound.eat();
         placeFood();
         checkLevel();
         if (score % 100 === 0 && !goldFood && Math.random() < 0.5) {
@@ -107,6 +109,7 @@ function checkLevel() {
     const newLevel = Math.floor(score / 50) + 1;
     if (newLevel > level) {
         level = newLevel;
+        if (window.SnakeSound) SnakeSound.levelUp();
     }
 }
 
@@ -224,6 +227,7 @@ function drawParticles() {
 function gameOver() {
     running = false;
     cancelAnimationFrame(rafId);
+    if (window.SnakeSound) SnakeSound.gameOver();
     const isRecord = score > best;
     if (isRecord) {
         best = score;
