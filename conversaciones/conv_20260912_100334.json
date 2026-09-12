@@ -1,6 +1,6 @@
 {
  "folder": "/Users/nico/Desktop/estanciero",
- "model": "CHUWI::qwen3.5-4b",
+ "model": "OpenCode Go::glm-5.3-flash",
  "history": [
   {
    "role": "user",

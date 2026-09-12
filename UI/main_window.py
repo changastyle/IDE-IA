@@ -29,7 +29,7 @@ from PySide6.QtGui import QDrag, QColor, QPainter, QFont, QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSplitter, QPlainTextEdit, QMenu, QFileDialog,
-    QGraphicsDropShadowEffect, QSizePolicy,
+    QGraphicsDropShadowEffect, QSizePolicy, QTabWidget,
     QDialog, QListWidget, QListWidgetItem,
 )
 
@@ -149,9 +149,13 @@ QPushButton#panelHeadBtn {
 QPushButton#panelHeadBtn:hover { background:#2a2d33; color:#fff; }
 QTreeWidget#filesTree {
     background:transparent; border:none; font-size:13px; outline:none; }
-QTreeWidget#filesTree::item { padding:2px 0; border-radius:5px; }
-QTreeWidget#filesTree::item:selected { background:#2f6fdb; }
-QTreeWidget#filesTree::item:hover { background:#2a2d33; }
+QTreeWidget#filesTree::item { padding:2px 0; border-radius:0; }
+QTreeWidget#filesTree::item:selected { background:#2f6fdb; border-radius:0; }
+QTreeWidget#filesTree::item:selected:first {
+    border-top-left-radius:5px; border-bottom-left-radius:5px; }
+QTreeWidget#filesTree::item:selected:last {
+    border-top-right-radius:5px; border-bottom-right-radius:5px; }
+QTreeWidget#filesTree::item:hover { background:#2a2d33; border-radius:0; }
 QFrame#centerEditor { background:#1a1c21; border:1px solid #2b2e34; border-radius:8px; }
 QTabWidget::pane { border:none; background:transparent; }
 QTabBar::tab {
@@ -272,18 +276,32 @@ class PanelHeader(QFrame):
         self.setFixedHeight(30)
         self.panel = panel
         self._press_pos = None
-        h = QHBoxLayout(self)
-        h.setContentsMargins(8, 2, 4, 2)
-        h.setSpacing(4)
+        self.h = QHBoxLayout(self)
+        self.h.setContentsMargins(8, 2, 4, 2)
+        self.h.setSpacing(4)
         self.lbl = QLabel(panel.title)
-        h.addWidget(self.lbl)
-        h.addStretch(1)
-        btn = QPushButton("◀")
-        btn.setFixedSize(22, 22)
-        btn.setToolTip("Colapsar panel")
-        btn.clicked.connect(panel.toggle_collapse)
-        self.btn_collapse = btn
-        h.addWidget(btn)
+        self.h.addWidget(self.lbl)
+        self.h.addStretch(1)
+
+    def add_action(self, icon, tip, cb):
+        """Agrega un botón chico a la derecha del título del panel."""
+        b = QPushButton(icon)
+        b.setObjectName("panelHeadBtn")
+        b.setFixedSize(22, 22)
+        b.setToolTip(tip)
+        b.clicked.connect(cb)
+        self.h.addWidget(b)
+        return b
+
+    def add_widget(self, w, stretch=0):
+        """Inserta un widget antes del stretch (después del título)."""
+        self.h.insertWidget(max(0, self.h.count() - 1), w, stretch)
+        return w
+
+    def add_right(self, w):
+        """Agrega un widget pegado al borde derecho del header."""
+        self.h.addWidget(w)
+        return w
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
@@ -412,8 +430,55 @@ class HotBar(QFrame):
         v.addStretch(1)
 
 
+class TerminalTab(QWidget):
+    """Una pestaña de terminal: shell zsh interactiva + QProcess."""
+
+    text_received = Signal(str)
+    finished = Signal(int)  # código de salida
+
+    def __init__(self, cwd=None, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        self.out = QPlainTextEdit()
+        self.out.setReadOnly(True)
+        self.out.setFont(QFont("Menlo", 12))
+        self.out.setStyleSheet(
+            "QPlainTextEdit{background:#141519;color:#d7dae0;border:none;}")
+        self.out.setPlaceholderText("Terminal…")
+        v.addWidget(self.out)
+        self.proc = QProcess(self)
+        self.proc.setProcessChannelMode(QProcess.MergedChannels)
+        self.proc.setWorkingDirectory(cwd or os.path.expanduser("~"))
+        self.proc.readyReadStandardOutput.connect(self._on_out)
+        self.proc.finished.connect(self._on_fin)
+        self.proc.start("/bin/zsh", ["-i"])
+
+    def _on_out(self):
+        text = str(self.proc.readAllStandardOutput(), "utf-8", "replace")
+        self.out.appendPlainText(text.rstrip())
+        self.text_received.emit(text)
+
+    def _on_fin(self, code, _status):
+        self.out.appendPlainText(f"— shell terminada (código {code}) —")
+        self.finished.emit(code)
+
+    def run_command(self, cmd):
+        self.out.appendPlainText(f"$ {cmd}")
+        self.proc.write((cmd + "\n").encode("utf-8"))
+
+    def is_running(self):
+        return self.proc.state() != QProcess.NotRunning
+
+    def kill(self):
+        if self.is_running():
+            self.proc.terminate()
+            if not self.proc.waitForFinished(1500):
+                self.proc.kill()
+
+
 class TerminalOverlay(QFrame):
-    """Terminal flotante semitransparente dentro del body del body."""
+    """Terminal flotante con múltiples pestañas (cada una su proceso)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -423,25 +488,75 @@ class TerminalOverlay(QFrame):
         v.setSpacing(4)
         h = QHBoxLayout()
         h.setSpacing(6)
-        lbl = QLabel("⌨ Terminal")
+        lbl = QLabel("Terminal")
         lbl.setStyleSheet("color:#9aa0aa; font-weight:bold; background:transparent;")
         h.addWidget(lbl)
         h.addStretch(1)
+        btn_new = QPushButton("＋")
+        btn_new.setFixedSize(22, 22)
+        btn_new.setToolTip("Nueva terminal")
+        btn_new.setStyleSheet(
+            "QPushButton{background:transparent;border:none;color:#9aa0aa;"
+            "font-size:14px;} QPushButton:hover{background:#2a2d33;"
+            "border-radius:4px;color:#fff;}")
+        btn_new.clicked.connect(lambda: self.new_tab(cwd=None))
+        h.addWidget(btn_new)
         btn_hide = QPushButton("▼")
         btn_hide.setFixedSize(22, 22)
         btn_hide.setToolTip("Ocultar terminal")
         btn_hide.clicked.connect(self.hide)
         h.addWidget(btn_hide)
         v.addLayout(h)
-        self.out = QPlainTextEdit()
-        self.out.setReadOnly(True)
-        self.out.setPlaceholderText("Terminal flotante (overlay)…")
-        v.addWidget(self.out, 1)
+        # Pestañas: Local, Local (2), … con + para nueva
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setTabsClosable(True)
+        self.tabs.tabCloseRequested.connect(self.close_tab)
+        v.addWidget(self.tabs, 1)
+        self._counter = 0
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(30)
         shadow.setColor(QColor(0, 0, 0, 170))
         shadow.setOffset(0, 4)
         self.setGraphicsEffect(shadow)
+
+    def new_tab(self, cwd=None, run_cmd=None, on_output=None, on_fin=None):
+        """Crea una pestaña con shell nueva; opcionalmente corre un comando."""
+        self._counter += 1
+        title = "Local" if self._counter == 1 else f"Local ({self._counter})"
+        tab = TerminalTab(cwd=cwd)
+        idx = self.tabs.addTab(tab, title)
+        self.tabs.setCurrentIndex(idx)
+        if on_output:
+            tab.text_received.connect(on_output)
+        if on_fin:
+            tab.finished.connect(on_fin)
+        if run_cmd:
+            tab.run_command(run_cmd)
+        return tab
+
+    def close_tab(self, idx):
+        tab = self.tabs.widget(idx)
+        if tab:
+            tab.kill()
+        self.tabs.removeTab(idx)
+        if self.tabs.count() == 0:
+            self.hide()
+
+    def current_tab(self):
+        return self.tabs.currentWidget()
+
+    def stop_current(self):
+        tab = self.current_tab()
+        if tab:
+            tab.kill()
+
+    def kill_all(self):
+        """Mata todas las shells (al cerrar la app)."""
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            if tab:
+                tab.kill()
 
 
 class ProjectsDialog(QDialog):
@@ -545,6 +660,7 @@ class TopBar(QFrame):
     stop_requested = Signal()
     edit_configs_requested = Signal()
     open_new_window = Signal(str)  # path → abrir nueva instancia
+    settings_requested = Signal()  # engranaje → preferencias
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -641,6 +757,20 @@ class TopBar(QFrame):
         self.btn_stop_run.setToolTip("Detener el proceso")
         self.btn_stop_run.clicked.connect(self.stop_requested.emit)
         h.addWidget(self.btn_stop_run)
+
+        # Engranaje → preferencias (mismo diálogo que 🔧 del chat)
+        gear = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "iconos", "engranaje.svg")
+        self.btn_settings = QPushButton()
+        self.btn_settings.setObjectName("tbGit")
+        self.btn_settings.setFixedSize(30, 30)
+        self.btn_settings.setCursor(Qt.PointingHandCursor)
+        self.btn_settings.setToolTip("Preferencias (modelos, voz, tokens)")
+        if os.path.exists(gear):
+            self.btn_settings.setIcon(QIcon(gear))
+            self.btn_settings.setIconSize(QSize(18, 18))
+        self.btn_settings.clicked.connect(self.settings_requested.emit)
+        h.addWidget(self.btn_settings)
 
     # ---- run configurations ----
     def load_run_configs(self):
@@ -821,6 +951,51 @@ class TopBar(QFrame):
             self.git_action.emit(f"newbranch:{name.strip()}")
 
 
+class ProcPopup(QDialog):
+    """Popup con los procesos corriendo en terminales (hijos del IDE),
+    cada uno con botón rojo para matarlo 1 a 1."""
+
+    def __init__(self, procs, parent=None):
+        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint)
+        self.setWindowTitle("Procesos")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 10, 12, 10)
+        v.setSpacing(4)
+        ttl = QLabel("Procesos de terminales")
+        ttl.setStyleSheet("color:#e8eaed; font-weight:bold; font-size:12px;")
+        v.addWidget(ttl)
+        if not procs:
+            empty = QLabel("No hay procesos corriendo")
+            empty.setStyleSheet("color:#8e8e93; font-size:11px;")
+            v.addWidget(empty)
+        for pid, rss_kb, cmd in procs:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            short = cmd if len(cmd) <= 58 else cmd[:55] + "…"
+            lbl = QLabel(f"{short}   ·   {rss_kb / 1024:.0f} MB")
+            lbl.setStyleSheet("color:#d7dae0; font-size:11px;")
+            lbl.setToolTip(f"PID {pid}\n{cmd}")
+            row.addWidget(lbl, 1)
+            btn = QPushButton("■")
+            btn.setFixedSize(22, 22)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(f"Matar proceso {pid}")
+            btn.setStyleSheet(
+                "QPushButton{background:#e5484d;color:#fff;border:none;"
+                "border-radius:4px;font-size:10px;font-weight:bold;}"
+                "QPushButton:hover{background:#ff5f5f;}")
+            btn.clicked.connect(lambda _, p=pid: self._kill(p))
+            row.addWidget(btn)
+            v.addLayout(row)
+        close = QPushButton("Cerrar")
+        close.clicked.connect(self.accept)
+        v.addWidget(close)
+
+    def _kill(self, pid):
+        subprocess.run(["kill", str(pid)], capture_output=True)
+        self.accept()
+
+
 class BottomBar(QFrame):
     """Barra inferior de 30px, todo el ancho."""
 
@@ -836,7 +1011,9 @@ class BottomBar(QFrame):
         self.lbl_ram = QLabel()
         self.lbl_ram.setStyleSheet("color:#8e8e93; font-size:11px;")
         self.lbl_ram.setToolTip(
-            "RAM total: IDE + terminales y procesos abiertos")
+            "RAM total: IDE + terminales y procesos abiertos\n"
+            "Clic para ver y matar procesos 1 a 1")
+        self.lbl_ram.setCursor(Qt.PointingHandCursor)
         h.addWidget(self.lbl_ram)
         self._ram_timer = QTimer(self)
         self._ram_timer.timeout.connect(self._update_ram)
@@ -849,6 +1026,50 @@ class BottomBar(QFrame):
             self.lbl_ram.setText(f"🐏 {mb/1024:.1f} GB")
         else:
             self.lbl_ram.setText(f"🐏 {mb:.0f} MB")
+
+    def mousePressEvent(self, e):
+        """Clic en la barra → popup de procesos (si el clic fue sobre RAM)."""
+        if self.lbl_ram.geometry().contains(e.position().toPoint()):
+            self._show_proc_popup()
+        super().mousePressEvent(e)
+
+    def _child_processes(self):
+        """Descendientes del IDE (excluyéndolo): [(pid, rss_kb, cmd)]."""
+        try:
+            out = subprocess.run(
+                ["ps", "-axo", "pid=,ppid=,rss=,command="],
+                capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            return []
+        children, info = {}, {}
+        for line in out.splitlines():
+            parts = line.split(None, 3)
+            if len(parts) < 3:
+                continue
+            try:
+                pid, ppid, r = int(parts[0]), int(parts[1]), int(parts[2])
+            except ValueError:
+                continue
+            info[pid] = (r, parts[3] if len(parts) > 3 else "?")
+            children.setdefault(ppid, []).append(pid)
+        result, stack, seen = [], [os.getpid()], set()
+        while stack:
+            pid = stack.pop()
+            if pid in seen or pid not in info:
+                continue
+            seen.add(pid)
+            result.append((pid, info[pid][0], info[pid][1]))
+            stack.extend(children.get(pid, []))
+        me = os.getpid()
+        return [(p, r, c) for p, r, c in result if p != me]
+
+    def _show_proc_popup(self):
+        procs = self._child_processes()
+        dlg = ProcPopup(procs, self)
+        dlg.adjustSize()
+        pos = self.lbl_ram.mapToGlobal(QPoint(
+            self.lbl_ram.width() - dlg.width(), -dlg.height() - 6))
+        dlg.exec()
 
 
 class SideZone(QSplitter):
@@ -906,6 +1127,7 @@ class MainBody(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._initial_sizes_done = False
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
@@ -934,7 +1156,9 @@ class MainBody(QWidget):
         # Panel de archivos en zona izquierda
         from UI.panels.files_panel import FilesPanel
         self.files_panel = FilesPanel()
-        self.left_zone.add_panel_widget("files", "Project", self.files_panel)
+        pf = self.left_zone.add_panel_widget(
+            "files", "Project", self.files_panel)
+        self._add_files_header_btns(pf, self.files_panel)
 
         # Paneles placeholder en zona izquierda
         p1l = QLabel("Panel 2 (izq)")
@@ -951,12 +1175,15 @@ class MainBody(QWidget):
         # Panel de chat IA en zona izquierda
         from UI.panels.chat_panel import ChatPanel
         self.chat_panel = ChatPanel()
-        self.left_zone.add_panel_widget("chat", "Chat IA", self.chat_panel)
+        pc = self.left_zone.add_panel_widget("chat", "Chat IA", self.chat_panel)
+        self._add_chat_header_ctrls(pc, self.chat_panel)
         self.left_zone.toggle("chat", False)
 
         # Panel de archivos en zona derecha (independiente, oculto al inicio)
         self.files_panel_right = FilesPanel()
-        self.right_zone.add_panel_widget("files", "Project", self.files_panel_right)
+        pfr = self.right_zone.add_panel_widget(
+            "files", "Project", self.files_panel_right)
+        self._add_files_header_btns(pfr, self.files_panel_right)
         self.right_zone.toggle("files", False)
 
         # Paneles placeholder en zona derecha
@@ -973,13 +1200,14 @@ class MainBody(QWidget):
 
         # Panel de chat IA en zona derecha
         self.chat_panel_right = ChatPanel()
-        self.right_zone.add_panel_widget("chat", "Chat IA", self.chat_panel_right)
+        pcr = self.right_zone.add_panel_widget(
+            "chat", "Chat IA", self.chat_panel_right)
+        self._add_chat_header_ctrls(pcr, self.chat_panel_right)
         self.right_zone.toggle("chat", False)
 
-        # Terminal flotante
+        # Terminal flotante (con pestañas)
         self.terminal = TerminalOverlay(self)
         self.terminal.hide()
-        self.proc = None
 
         # Conectar play de ambos paneles → terminal
         self.files_panel.run_requested.connect(self._run_file)
@@ -1012,6 +1240,57 @@ class MainBody(QWidget):
             lambda p: self._resolve_from_editor(p, True))
         self.center.review_rejected.connect(
             lambda p: self._resolve_from_editor(p, False))
+
+    def _add_chat_header_ctrls(self, panel, chat):
+        """Controles de modelo en la fila del título 'Chat IA', a la derecha.
+        (El combo de modelo vive en la fila inferior del chat.)"""
+        for b in (chat.btn_pick, chat.btn_refresh):
+            panel.header.add_right(b)
+
+    def _add_files_header_btns(self, panel, files_panel):
+        """Botones ＋ ↻ ⇅ ✕ en el header del panel, junto al título."""
+        panel.header.add_action("＋", "Nuevo archivo", files_panel._new_file)
+        panel.header.add_action("↻", "Refrescar", files_panel.refresh)
+        panel.header.add_action("⇅", "Colapsar todo",
+                                files_panel._collapse_all)
+        panel.header.add_action(
+            "✕", "Cerrar panel", lambda: panel.setVisible(False))
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self._initial_sizes_done:
+            self._initial_sizes_done = True
+            QTimer.singleShot(0, self._apply_initial_widths)
+
+    def _apply_initial_widths(self):
+        """Panel de archivos (izq) arranca con 30% del ancho de la ventana."""
+        sp = self.main_splitter
+        total = sum(sp.sizes()) or sp.width()
+        if total <= 50:
+            QTimer.singleShot(50, self._apply_initial_widths)
+            return
+        left = max(int(total * 0.30), 240)
+        sizes = sp.sizes()
+        right = sizes[2] if len(sizes) > 2 else 0
+        center = max(total - left - right, 300)
+        sp.setSizes([left, center, right])
+
+    def ensure_right_chat_width(self):
+        """Al abrir el chat derecho, le garantiza ≥40% del ancho total."""
+        sp = self.main_splitter
+        sizes = sp.sizes()
+        if len(sizes) < 3 or sum(sizes) <= 0:
+            return
+        left, center, right = sizes
+        target = int(sum(sizes) * 0.4)
+        if right >= target:
+            return
+        need = target - right
+        take_l = min(left // 2, need // 2)
+        take_c = need - take_l
+        if take_c > center:
+            take_c, take_l = center, need - center
+        sp.setSizes([left - take_l, center - take_c, right + need])
 
     def _open_from_chat(self, rel_path):
         """Abre en el editor un archivo tocado por la IA (path relativo)."""
@@ -1077,32 +1356,27 @@ class MainBody(QWidget):
 
     def _run_command(self, cmd, cwd, open_browser=False, header=None,
                      browser=""):
-        """Ejecuta un comando en la terminal flotante.
+        """Ejecuta un comando en una pestaña nueva de la terminal.
 
         Si open_browser y la salida muestra una URL http://localhost:…,
         abre el navegador automáticamente (una sola vez por ejecución).
         """
-        if self.proc is not None and self.proc.state() != QProcess.NotRunning:
-            self.terminal.out.appendPlainText("⚠ Ya hay un proceso corriendo.")
-            return
-        self.terminal.out.clear()
-        self.terminal.out.appendPlainText(f"$ {header or cmd}")
         self.toggle_terminal(True)
         self._open_browser = open_browser
         self._browser_name = browser or ""
         self._browser_opened = False
-        self.proc = QProcess()
-        self.proc.setWorkingDirectory(cwd)
-        self.proc.readyReadStandardOutput.connect(self._on_proc_output)
-        self.proc.readyReadStandardError.connect(
-            lambda: self.terminal.out.appendPlainText(
-                str(self.proc.readAllStandardError(), "utf-8", "replace").rstrip()))
-        self.proc.finished.connect(self._on_proc_finished)
-        self.proc.start("/bin/zsh", ["-c", cmd])
+        tab = self.terminal.new_tab(
+            cwd=cwd, run_cmd=header or cmd,
+            on_output=self._on_tab_output,
+            on_fin=lambda code: self._on_tab_finished(code))
+        # Avisar al top_bar que hay un run corriendo
+        p = self.parent()
+        while p and not hasattr(p, "top_bar"):
+            p = p.parent()
+        if p and hasattr(p, "top_bar"):
+            p.top_bar.set_run_running(True)
 
-    def _on_proc_output(self):
-        text = str(self.proc.readAllStandardOutput(), "utf-8", "replace").rstrip()
-        self.terminal.out.appendPlainText(text)
+    def _on_tab_output(self, text):
         # Auto-abrir navegador si la salida muestra una URL local
         if getattr(self, "_open_browser", False) and not getattr(
                 self, "_browser_opened", True):
@@ -1117,16 +1391,13 @@ class MainBody(QWidget):
                     from PySide6.QtGui import QDesktopServices
                     from PySide6.QtCore import QUrl
                     QDesktopServices.openUrl(QUrl(url))
-                self.terminal.out.appendPlainText(f"🌐 Navegador abierto: {name or 'sistema'}")
+                self.terminal.current_tab().out.appendPlainText(
+                    f"🌐 Navegador abierto: {name or 'sistema'}")
 
     def _stop_proc(self):
-        if self.proc is not None and self.proc.state() != QProcess.NotRunning:
-            self.proc.terminate()
-            if not self.proc.waitForFinished(2000):
-                self.proc.kill()
+        self.terminal.stop_current()
 
-    def _on_proc_finished(self, code, _status):
-        self.terminal.out.appendPlainText(f"— proceso terminado (código {code}) —")
+    def _on_tab_finished(self, code):
         # Avisar al top_bar para desactivar el botón stop
         p = self.parent()
         while p and not hasattr(p, "top_bar"):
@@ -1167,6 +1438,9 @@ class MainBody(QWidget):
         if show is None:
             show = not self.terminal.isVisible()
         if show:
+            if self.terminal.tabs.count() == 0:
+                root = self.files_panel.root_path or None
+                self.terminal.new_tab(cwd=root)
             self._place_terminal()
             self.terminal.show()
             self.terminal.raise_()
@@ -1211,6 +1485,8 @@ class UIMainWindow(QMainWindow):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         _ia_icon = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "iconos", "ia.svg")
+        _icons = os.path.join(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))), "iconos")
         self.hotbar_left = HotBar(
             side="left",
             buttons=(
@@ -1218,7 +1494,10 @@ class UIMainWindow(QMainWindow):
                 ("p1", "2", "Panel 2 (izq)", None),
                 ("p2", "3", "Panel 3 (izq)", None),
                 ("chat", "4", "Panel 4 — Chat IA (izq)", _ia_icon),
-                ("term", "⌨", "Terminal (flotante)", None),
+                ("git", "", "Ramas git — pull/push/checkout",
+                 os.path.join(_icons, "git_branch.svg")),
+                ("term", "", "Terminal (pestañas)",
+                 os.path.join(_icons, "terminal_w.svg")),
             ),
             checked={"files"})
         self.hotbar_right = HotBar(
@@ -1250,6 +1529,9 @@ class UIMainWindow(QMainWindow):
             lambda on: self.body.left_zone.toggle("chat", on))
         self.hotbar_left.btns["term"].toggled.connect(
             lambda on: self.body.toggle_terminal(on))
+        # Git de la hotbar → mismo menú de ramas de la top bar
+        self.hotbar_left.btns["git"].clicked.connect(
+            self._show_branch_menu_from_hotbar)
         # Hotbar derecha → zona derecha (independiente)
         self.hotbar_right.btns["files"].toggled.connect(
             lambda on: self.body.right_zone.toggle("files", on))
@@ -1258,7 +1540,9 @@ class UIMainWindow(QMainWindow):
         self.hotbar_right.btns["p2"].toggled.connect(
             lambda on: self.body.right_zone.toggle("p2", on))
         self.hotbar_right.btns["chat"].toggled.connect(
-            lambda on: self.body.right_zone.toggle("chat", on))
+            lambda on: (self.body.right_zone.toggle("chat", on),
+                        QTimer.singleShot(0, self.body.ensure_right_chat_width)
+                        if on else None))
         self.hotbar_right.btns["term"].toggled.connect(
             lambda on: self.body.toggle_terminal(on))
         # Top bar → acciones
@@ -1269,6 +1553,7 @@ class UIMainWindow(QMainWindow):
         self.top_bar.stop_requested.connect(self._on_stop_requested)
         self.top_bar.edit_configs_requested.connect(self._open_run_configs)
         self.top_bar.open_new_window.connect(self._open_new_window)
+        self.top_bar.settings_requested.connect(self._show_settings_menu)
         # Panel de archivos sigue a la carpeta de la top bar
         self.body.files_panel.file_activated.connect(self._on_file_activated)
         self.body.files_panel_right.file_activated.connect(self._on_file_activated)
@@ -1279,9 +1564,10 @@ class UIMainWindow(QMainWindow):
         self.top_bar.set_folder(start_dir)
         self.body.set_root(start_dir)
         add_session(start_dir)
-        # Guardar sesión al cerrar
+        # Guardar sesión al cerrar + matar shells de la terminal
         app = QApplication.instance()
         app.aboutToQuit.connect(self._save_session)
+        app.aboutToQuit.connect(self.body.terminal.kill_all)
 
     # ---- navegación atrás/adelante ----
     def push_history(self, location):
@@ -1333,6 +1619,31 @@ class UIMainWindow(QMainWindow):
         if not hasattr(QApplication.instance(), "_windows"):
             QApplication.instance()._windows = []
         QApplication.instance()._windows.append(w)
+
+    def _show_branch_menu_from_hotbar(self):
+        """Botón git de la hotbar → menú de ramas (reusa el de la top bar)."""
+        self.hotbar_left.btns["git"].setChecked(False)
+        self.top_bar._show_branch_menu()
+
+    def _show_settings_menu(self):
+        """Engranaje de la top bar → menú de opciones."""
+        m = QMenu(self)
+        m.setObjectName("runMenu")
+        a_ai = QAction("Preferencias de IA…", m)
+        a_ai.triggered.connect(self._open_ai_prefs)
+        m.addAction(a_ai)
+        a_st = QAction("Settings / Atajos…", m)
+        a_st.triggered.connect(self._open_settings)
+        m.addAction(a_st)
+        b = self.top_bar.btn_settings
+        m.exec(b.mapToGlobal(QPoint(0, b.height())))
+
+    def _open_ai_prefs(self):
+        """Preferencias de IA (el mismo diálogo de 🔧 del chat)."""
+        body = self.body
+        panel = (body.chat_panel_right
+                 if body.right_zone.is_visible("chat") else body.chat_panel)
+        panel._open_prefs()
 
     def _open_settings(self):
         """Abre el diálogo de Settings con la pestaña de shortcuts."""

@@ -1,5 +1,5 @@
 Carpeta: /Users/nico/Desktop/estanciero
-Modelo: qwen3.5-4b · CHUWI
+Modelo: glm-5.3-flash · OpenCode Go
 
 --- Tú ---
 [RESUMEN DE CONVERSACIÓN ANTERIOR]

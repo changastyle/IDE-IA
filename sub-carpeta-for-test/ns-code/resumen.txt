@@ -36,3 +36,68 @@ Prompt: desarollemos la idea 2 en una carpeta ideas y crea el archivo idea2.txt
 Respuesta: Listo ✅ Creé **`ideas/idea2.txt`** con el plan para limpiar la carpeta `_trash/`: verificación de referencias, borrado (con backup vía Git o ZIP), revisión de otros restos (`test.js`, `pulga.txt`) y verificación final. Cuando quieras, ejecuto la limpieza directamente.
 Archivos: ideas/idea2.txt (+65)
 
+[00:21:15] sub-carpeta-for-test-prompt-7
+Prompt: cuentame un poco de la idea 3, desarrolalla aqui..
+Respuesta: La **idea 3** de `changes.md` es: **"Niveles de velocidad visibles: mostrar un aviso breve '¡Nivel 2!' al subir de velocidad"**. Te la desarrollo aquí 👇
+
+## 🎯 El problema que resuelve
+
+Hoy, cuando la puntuación cruza un múltiplo de 50, `checkLevel()` en `snake.js` sube el nivel silenciosamente:
+
+```js
+function checkLevel() {
+    const newLevel = Math.floor(score / 50) + 1;
+    if (newLevel > level) {
+        level = newLevel;
+        if (window.SnakeSound) SnakeSound.levelUp();  // suena, pero...
+    }
+}
+```
+
+Suena el efecto `levelUp()`, pero **visualmente no pasa nada**: el único indicio es que el número del HUD cambia y la serpiente empieza a moverse más rápido de golpe. El jugador puede no entender por qué de repente va todo más rápido.
+
+## 🛠️ Cómo se implementaría
+
+**1. Aviso flotante en el canvas** (lo más simple, sin tocar el HTML):
+
+- Añadir una variable `levelBanner = { text, life }`.
+- En `checkLevel()`, al subir de nivel: `levelBanner = { text: '¡Nivel ' + level + '!', life: 1.5 }`.
+- En `draw()`, si `levelBanner.life > 0`, dibujar el texto centrado con `globalAlpha` proporcional a `life` (se desvanece solo) y una fuente grande con borde/glow verde.
+- En `loop()` o `updateParticles()`, decrementar `life` con el delta de tiempo.
+
+**2. Detalles de pulido opcionales:**
+
+- **Animación de escala**: que el texto aparezca grande y se encoja levemente (efecto "pop").
+- **Flash sutil del borde del canvas** en verde durante medio segundo.
+- **Mostrar también la nueva velocidad**: "¡Nivel 3! ⚡ Más rápido".
+- **Sonido ya existe**: `SnakeSound.levelUp()` se mantiene como está.
+
+**3. Alternativa con DOM** (más accesible): un `<div id="levelBanner">` sobre el `#game-container`, con una animación CSS (`@keyframes` de fade-in/out) que se activa añadiendo una clase y se quita con `animationend`. Ventaja: no interfiere con el render del canvas y es más fácil de estilizar.
+
+## ⚖️ Esfuerzo vs impacto
+
+- **Esfuerzo**: bajo (~20-30 líneas en total, un solo archivo si se hace en canvas).
+- **Impacto**: alto en sensación de progreso — es uno de esos detalles que hacen que el juego se sienta "vivo" y le da al jugador una recompensa visual cada 50 puntos.
+
+¿Querés que lo implemente directamente en `snake.js` (versión canvas) o prefieres la variante con DOM/CSS?
+
+[00:36:36] sub-carpeta-for-test-prompt-1
+Prompt: cual es la idea 4
+Respuesta: Confirmado: la idea 3 está en `changes.md` como "Niveles de velocidad visibles" (aviso breve "¡Nivel 2!" al subir de velocidad). Ya te la desarrollé arriba con las dos variantes (canvas y DOM/CSS) — decime cuál preferís y la implemento directamente en el código.
+
+[00:37:10] sub-carpeta-for-test-prompt-2
+Prompt: y la idea 4??
+Respuesta: La **idea 4** de `changes.md` es: **"`test.js` y `pulga.txt`: revisar si siguen siendo necesarios o son restos de pruebas"**.
+
+Es decir, una tarea de limpieza: verificar qué contienen esos dos archivos sueltos en la raíz y, si son restos de experimentos o pruebas viejas, eliminarlos (o moverlos a `_trash/`) para dejar el proyecto ordenado.
+
+Si querés, puedo leerlos ahora mismo y decirte si sirven para algo o se pueden borrar directamente.
+
+[00:42:02] sub-carpeta-for-test-prompt-3
+Prompt: la idea 5??
+Respuesta: La **idea 4** de `changes.md` es: **"`test.js` y `pulga.txt`: revisar si siguen siendo necesarios o son restos de pruebas"**.
+
+Es decir, una tarea de limpieza: verificar qué contienen esos dos archivos sueltos en la raíz y, si son restos de experimentos o pruebas viejas, eliminarlos (o moverlos a `_trash/`) para dejar el proyecto ordenado.
+
+¿Querés que los lea ahora mismo y te diga si sirven para algo o se pueden borrar directamente?
+

@@ -67,40 +67,15 @@ class FilesPanel(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
-        # ---- Header estilo IntelliJ ----
-        head = QHBoxLayout()
-        head.setContentsMargins(10, 6, 6, 6)
-        head.setSpacing(4)
-        self.title = QLabel("Project")
-        self.title.setObjectName("panelTitle")
-        self.title.setCursor(Qt.PointingHandCursor)
-        head.addWidget(self.title)
-        lbl_chev = QLabel("⌄")
-        lbl_chev.setObjectName("panelChevron")
-        head.addWidget(lbl_chev)
-        head.addStretch(1)
-        for icon, tip, cb in (
-                ("＋", "Nuevo archivo", self._new_file),
-                ("↻", "Refrescar", self.refresh),
-                ("⇅", "Colapsar todo", self._collapse_all),
-                ("✕", "Cerrar panel", lambda: self.setVisible(False))):
-            b = QPushButton(icon)
-            b.setObjectName("panelHeadBtn")
-            b.setFixedSize(22, 22)
-            b.setToolTip(tip)
-            b.clicked.connect(cb)
-            head.addWidget(b)
-        v.addLayout(head)
-
-        # ---- Árbol (3 columnas: nombre, botones, diff badge) ----
+        # ---- Árbol (2 columnas: nombre + acciones combinadas) ----
+        # (los botones ＋ ↻ ⇅ ✕ viven en el header del panel contenedor)
         self.tree = QTreeWidget()
         self.tree.setObjectName("filesTree")
         self.tree.setHeaderHidden(True)
-        self.tree.setColumnCount(3)
+        self.tree.setColumnCount(2)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.tree.setIndentation(14)
         self.tree.setExpandsOnDoubleClick(False)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -276,57 +251,58 @@ class FilesPanel(QWidget):
                 it.setData(0, Qt.UserRole + 1, "file")
                 it.setToolTip(0, e.path)
                 parent_item.addChild(it)
-                # Botones para archivos ejecutables: play + play_bookmark
+                # Columna de acciones: badge de diff + botones play/bookmark
+                # en UN solo widget (evita columnas muertas)
                 ext = os.path.splitext(e.name)[1].lower()
-                if ext in RUNNABLE_EXTS:
-                    # Contenedor para los dos botones
+                runnable = ext in RUNNABLE_EXTS
+                diff = self._file_diffs.get(e.path)
+                has_badge = diff is not None and diff != 0
+                if runnable or has_badge:
                     from PySide6.QtWidgets import QWidget, QHBoxLayout
                     btns = QWidget()
                     lo = QHBoxLayout(btns)
-                    lo.setContentsMargins(0, 0, 0, 0)
+                    lo.setContentsMargins(0, 0, 2, 0)
                     lo.setSpacing(2)
-                    # Play
-                    btn = QPushButton()
-                    btn.setIcon(play_icon())
-                    btn.setIconSize(QSize(12, 12))
-                    btn.setFixedSize(16, 16)
-                    btn.setStyleSheet(
-                        "QPushButton { background:transparent; border:none; }"
-                        "QPushButton:hover { background:#22c55e33; border-radius:2px; }")
-                    btn.setToolTip(f"Ejecutar {e.name}")
-                    btn.clicked.connect(
-                        lambda _, p=e.path: self.run_requested.emit(p))
-                    lo.addWidget(btn)
-                    # Play + Bookmark (guardar como run config)
-                    btn_bm = QPushButton()
-                    btn_bm.setIcon(play_bookmark_icon())
-                    btn_bm.setIconSize(QSize(14, 14))
-                    btn_bm.setFixedSize(16, 16)
-                    btn_bm.setStyleSheet(
-                        "QPushButton { background:transparent; border:none; }"
-                        "QPushButton:hover { background:#2f6fdb33; border-radius:2px; }")
-                    btn_bm.setToolTip(f"Guardar y ejecutar {e.name} como configuración")
-                    btn_bm.clicked.connect(
-                        lambda _, p=e.path: self.save_run_config.emit(p))
-                    lo.addWidget(btn_bm)
+                    if has_badge:
+                        badge = QLabel()
+                        if diff > 0:
+                            badge.setText(f"+{diff}")
+                            badge.setStyleSheet(
+                                "background:rgba(34,197,94,0.15); color:#22c55e; "
+                                "border-radius:4px; padding:1px 5px; "
+                                "font-size:10px; font-weight:bold;")
+                        else:
+                            badge.setText(f"{diff}")
+                            badge.setStyleSheet(
+                                "background:rgba(239,68,68,0.15); color:#ef4444; "
+                                "border-radius:4px; padding:1px 5px; "
+                                "font-size:10px; font-weight:bold;")
+                        lo.addWidget(badge)
+                    if runnable:
+                        btn = QPushButton()
+                        btn.setIcon(play_icon())
+                        btn.setIconSize(QSize(12, 12))
+                        btn.setFixedSize(16, 16)
+                        btn.setStyleSheet(
+                            "QPushButton { background:transparent; border:none; }"
+                            "QPushButton:hover { background:#22c55e33; border-radius:2px; }")
+                        btn.setToolTip(f"Ejecutar {e.name}")
+                        btn.clicked.connect(
+                            lambda _, p=e.path: self.run_requested.emit(p))
+                        lo.addWidget(btn)
+                        # Play + Bookmark (guardar como run config)
+                        btn_bm = QPushButton()
+                        btn_bm.setIcon(play_bookmark_icon())
+                        btn_bm.setIconSize(QSize(14, 14))
+                        btn_bm.setFixedSize(16, 16)
+                        btn_bm.setStyleSheet(
+                            "QPushButton { background:transparent; border:none; }"
+                            "QPushButton:hover { background:#2f6fdb33; border-radius:2px; }")
+                        btn_bm.setToolTip(f"Guardar y ejecutar {e.name} como configuración")
+                        btn_bm.clicked.connect(
+                            lambda _, p=e.path: self.save_run_config.emit(p))
+                        lo.addWidget(btn_bm)
                     self.tree.setItemWidget(it, 1, btns)
-                # Badge de diff de líneas (+N / -N)
-                diff = self._file_diffs.get(e.path)
-                if diff is not None and diff != 0:
-                    badge = QLabel()
-                    if diff > 0:
-                        badge.setText(f"+{diff}")
-                        badge.setStyleSheet(
-                            "background:rgba(34,197,94,0.15); color:#22c55e; "
-                            "border-radius:4px; padding:1px 5px; "
-                            "font-size:10px; font-weight:bold;")
-                    else:
-                        badge.setText(f"{diff}")
-                        badge.setStyleSheet(
-                            "background:rgba(239,68,68,0.15); color:#ef4444; "
-                            "border-radius:4px; padding:1px 5px; "
-                            "font-size:10px; font-weight:bold;")
-                    self.tree.setItemWidget(it, 2, badge)
 
     def _on_double(self, item, _col):
         path = item.data(0, Qt.UserRole)

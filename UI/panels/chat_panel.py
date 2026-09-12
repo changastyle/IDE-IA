@@ -18,14 +18,17 @@ import shlex
 import subprocess
 import sys
 import difflib
+from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal, QThread, QTimer, QSettings, QSize
-from PySide6.QtGui import QFont, QTextCursor, QIcon, QPixmap
+from PySide6.QtCore import QRectF, QPointF, QRect, QPoint
+from PySide6.QtGui import QFont, QTextCursor, QIcon, QPixmap, QTextOption
+from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
     QPlainTextEdit, QComboBox, QLineEdit, QCheckBox, QMessageBox,
     QFileDialog, QInputDialog, QSplitter, QFrame, QListWidget, QListWidgetItem,
-    QScrollArea, QSizePolicy,
+    QScrollArea, QSizePolicy, QToolTip, QDialog, QProgressBar, QLayout,
 )
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -167,6 +170,46 @@ def fmt_ai_text(raw):
     return t.strip()
 
 
+def _para_hash(txt):
+    """Hash estable de un párrafo (para recordar exclusiones)."""
+    import hashlib
+    return hashlib.md5(txt.strip().encode("utf-8")).hexdigest()[:10]
+
+
+def filter_skipped(text, skip):
+    """Quita los párrafos cuyo hash esté en `skip` (purificación de contexto)."""
+    if not skip or not text:
+        return text
+    blocks = [b for b in text.split("\n\n") if b.strip()]
+    return "\n\n".join(b for b in blocks if _para_hash(b) not in skip)
+
+
+def compact_tool_json(text):
+    """Reemplaza los {"tool": ...} del historial por un marcador compacto.
+
+    El JSON crudo de una tool-call puede tener un archivo entero embebido;
+    en el historial basta con saber que la tool se ejecutó.
+    """
+    dec = json.JSONDecoder()
+    out = []
+    i, n = 0, len(text or "")
+    while i < n:
+        if text[i] == "{":
+            try:
+                obj, end = dec.raw_decode(text[i:])
+                if isinstance(obj, dict) and "tool" in obj:
+                    out.append(
+                        f"\n[🔧 {obj.get('tool', '?')} → "
+                        f"{obj.get('path', '')}]\n")
+                    i += end
+                    continue
+            except ValueError:
+                pass
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
 def fetch_models(base, key=""):
     import requests
     headers = {"Authorization": f"Bearer {key}"} if key else {}
@@ -286,7 +329,7 @@ class Worker(QThread):
 
     def __init__(self, base, model, tools, history, api_key="", no_context=False,
                  session_id="", max_tools=50, tool_limit_enabled=True,
-                 request_timeout=600, parent=None):
+                 request_timeout=600, ctx_parts=None, ctx_skip=None, parent=None):
         super().__init__(parent)
         self.base, self.model, self.tools, self.history = base, model, tools, history
         self.api_key = api_key
@@ -295,6 +338,8 @@ class Worker(QThread):
         self.max_tools = max_tools
         self.tool_limit_enabled = tool_limit_enabled
         self.request_timeout = request_timeout
+        self.ctx_parts = ctx_parts or {}   # partes de contexto on/off
+        self.ctx_skip = ctx_skip or {}     # párrafos excluidos por hash
         self._stop = False
         self.usage = {"prompt": 0, "completion": 0, "gen_time": 0.0}
         self._backed_up = set()  # paths ya respaldados en este run
@@ -303,41 +348,63 @@ class Worker(QThread):
         self._stop = True
 
     def _system_message(self):
+        on = lambda k: self.ctx_parts.get(k, True)
+        skip = lambda k: set(self.ctx_skip.get(k, {}))
         content = SYSTEM_PROMPT.format(folder=self.tools.root)
-        content += ("\n\nArchivos actuales de la carpeta de trabajo:\n"
-                    + folder_snapshot(self.tools.root))
-        idx_path = os.path.join(self.tools.root, NS_DIR, "indexado.txt")
-        if not os.path.exists(idx_path):
-            idx_path = os.path.join(self.tools.root, "indexado.txt")  # legacy
-        if os.path.exists(idx_path):
-            try:
-                with open(idx_path, encoding="utf-8", errors="replace") as f:
-                    idx = f.read(MAX_INDEX)
-                if idx.strip():
-                    content += "\n\nMapa del proyecto (indexado.txt):\n" + idx
-            except OSError:
-                pass
-        ctx_path = os.path.join(self.tools.root, NS_DIR, "contexto.txt")
-        if not os.path.exists(ctx_path):
-            ctx_path = os.path.join(self.tools.root, "contexto.txt")  # legacy
-        if os.path.exists(ctx_path):
-            try:
-                with open(ctx_path, encoding="utf-8", errors="replace") as f:
-                    ctx = f.read(MAX_INDEX)
-                if ctx.strip():
-                    content += "\n\nContexto guardado (contexto.txt):\n" + ctx
-            except OSError:
-                pass
-        res_path = os.path.join(self.tools.root, NS_DIR, "resumen.txt")
-        if os.path.exists(res_path):
-            try:
-                with open(res_path, encoding="utf-8", errors="replace") as f:
-                    res = f.read(MAX_INDEX)
-                if res.strip():
-                    content += "\n\nResumen de la conversación (resumen.txt):\n" + res
-            except OSError:
-                pass
+        if on("tree"):
+            tree = filter_skipped(folder_snapshot(self.tools.root),
+                                  skip("tree"))
+            if tree.strip():
+                content += ("\n\nArchivos actuales de la carpeta de trabajo:\n"
+                            + tree)
+        if on("indexado"):
+            idx_path = os.path.join(self.tools.root, NS_DIR, "indexado.txt")
+            if not os.path.exists(idx_path):
+                idx_path = os.path.join(self.tools.root, "indexado.txt")  # legacy
+            if os.path.exists(idx_path):
+                try:
+                    with open(idx_path, encoding="utf-8", errors="replace") as f:
+                        idx = filter_skipped(f.read(MAX_INDEX), skip("indexado"))
+                    if idx.strip():
+                        content += "\n\nMapa del proyecto (indexado.txt):\n" + idx
+                except OSError:
+                    pass
+        if on("contexto"):
+            ctx_path = os.path.join(self.tools.root, NS_DIR, "contexto.txt")
+            if not os.path.exists(ctx_path):
+                ctx_path = os.path.join(self.tools.root, "contexto.txt")  # legacy
+            if os.path.exists(ctx_path):
+                try:
+                    with open(ctx_path, encoding="utf-8", errors="replace") as f:
+                        ctx = filter_skipped(f.read(MAX_INDEX), skip("contexto"))
+                    if ctx.strip():
+                        content += "\n\nContexto guardado (contexto.txt):\n" + ctx
+                except OSError:
+                    pass
+        if on("resumen"):
+            res_path = os.path.join(self.tools.root, NS_DIR, "resumen.txt")
+            if os.path.exists(res_path):
+                try:
+                    with open(res_path, encoding="utf-8", errors="replace") as f:
+                        res = filter_skipped(f.read(MAX_INDEX), skip("resumen"))
+                    if res.strip():
+                        content += ("\n\nResumen de la conversación "
+                                    "(resumen.txt):\n" + res)
+                except OSError:
+                    pass
         return {"role": "system", "content": content}
+
+    def _slim_history(self, history):
+        """Historial liviano: tool-JSON → marcador chico + tope por mensaje."""
+        out = []
+        for m in history:
+            c = m.get("content", "")
+            if m.get("role") == "assistant":
+                c = compact_tool_json(c)
+            if len(c) > 2000:
+                c = c[:2000] + "…"
+            out.append({"role": m.get("role"), "content": c})
+        return out
 
     def _chat(self):
         import requests
@@ -347,7 +414,11 @@ class Worker(QThread):
             history = user_msgs[-1:] if user_msgs else []
         else:
             messages = [self._system_message()]
-            history = self.history
+            history = self._slim_history(self.history)
+            if not self.ctx_parts.get("history", True):
+                # Historial purificado: solo el último mensaje del usuario
+                user_msgs = [m for m in history if m.get("role") == "user"]
+                history = user_msgs[-1:] if user_msgs else []
         self._streamed = False
         t0 = time.time()
         headers = {"User-Agent": "cli-ia/1.0"}
@@ -552,11 +623,41 @@ class Worker(QThread):
 # ---- Input con Enter para enviar ----
 
 class ChatInput(QPlainTextEdit):
+    """Input de chat compacto: arranca de una línea y crece al escribir."""
     sent = Signal()
+    MIN_H = 40
+    MAX_H = 160
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self.setStyleSheet(
+            "QPlainTextEdit { background:transparent; color:#e8eaed; "
+            "font-size:13px; border:none; }")
+        self.textChanged.connect(
+            lambda: QTimer.singleShot(0, self._auto_size))
+        self._auto_size()
+
+    def _auto_size(self):
+        """Altura = líneas reales (contando wraps), con tope."""
+        fm = self.fontMetrics()
+        avail = max(40, self.viewport().width() - 12)
+        lines = 0
+        block = self.document().begin()
+        while block.isValid():
+            lc = block.layout().lineCount()
+            if lc <= 0:
+                # Bloque sin layout aún (QPlainTextEdit es lazy): estimar
+                w = fm.horizontalAdvance(block.text()) + 1
+                lc = max(1, int(w // avail) + 1)
+            lines += lc
+            block = block.next()
+        h = lines * fm.lineSpacing() + 14
+        self.setFixedHeight(max(self.MIN_H, min(self.MAX_H, h)))
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not (e.modifiers() & Qt.ShiftModifier):
@@ -576,7 +677,8 @@ def _rgba(hex_color, alpha=0.12):
 
 class CollapsibleSection(QFrame):
     """Sección colapsable con header y contenido."""
-    def __init__(self, title, color="#8e8e93", expanded=False, parent=None):
+    def __init__(self, title, color="#8e8e93", expanded=False, icon=None,
+                 parent=None):
         super().__init__(parent)
         self._expanded = expanded
         self._title = title
@@ -586,6 +688,9 @@ class CollapsibleSection(QFrame):
         v.setSpacing(0)
         # Header
         self.btn = QPushButton(f"{'▼' if expanded else '▶'} {title}")
+        if icon and os.path.exists(icon):
+            self.btn.setIcon(QIcon(icon))
+            self.btn.setIconSize(QSize(14, 14))
         self.btn.setCheckable(True)
         self.btn.setChecked(expanded)
         self.btn.setStyleSheet(
@@ -697,7 +802,9 @@ class ToolChip(QFrame):
                 "background:rgba(122,162,247,0.12); border:none; "
                 "border-radius:3px; padding:1px 5px;")
             link.setCursor(Qt.PointingHandCursor)
-            link.setToolTip("Abrir en el editor")
+            link.setToolTip(f"Abrir en el editor\n{path}")
+            # No fuerza el ancho del bloque: se recorta si no entra
+            link.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             link.clicked.connect(
                 lambda _=None, p=path: self.open_clicked.emit(p))
             hl.addWidget(link)
@@ -804,7 +911,8 @@ class FileDiffCard(QFrame):
             "color:#e8eaed; font-size:11px; font-family:Menlo,monospace; "
             "background:transparent; border:none;")
         title.setCursor(Qt.PointingHandCursor)
-        title.setToolTip("Abrir en el editor")
+        title.setToolTip(f"Abrir en el editor\n{path}")
+        title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         title.clicked.connect(
             lambda _=None, p=path: self.open_clicked.emit(p))
         hl.addWidget(title, 1)
@@ -921,6 +1029,7 @@ class PromptBlock(QFrame):
     accept_requested = Signal(str)
     reject_requested = Signal(str)
     open_file = Signal(str)
+    inspect_requested = Signal()  # clic en la pill 📤 enviados
 
     def __init__(self, prompt_id, prompt_text, timestamp, parent=None):
         super().__init__(parent)
@@ -947,9 +1056,13 @@ class PromptBlock(QFrame):
         v.setContentsMargins(6, 6, 6, 6)
         v.setSpacing(4)
 
-        # Header del prompt (siempre visible, clicable para expandir todo)
-        self.header = QPushButton(
-            f"📝 {timestamp}  {prompt_id}")
+        # Header del prompt: avatar usuario + texto del prompt en amarillo
+        short = prompt_text.replace("\n", " ").strip()
+        if len(short) > 140:
+            short = short[:140] + "…"
+        self.header = QPushButton("  " + short)
+        self.header.setIcon(QIcon(os.path.join(ICONS_DIR, "usuario.svg")))
+        self.header.setIconSize(QSize(16, 16))
         self.header.setStyleSheet(
             "QPushButton { background:rgba(234,179,8,0.10); color:#fbbf24; "
             "border:1px solid rgba(234,179,8,0.30); border-radius:6px; "
@@ -959,20 +1072,10 @@ class PromptBlock(QFrame):
             "QPushButton:checked { background:rgba(234,179,8,0.18); }")
         self.header.setCheckable(True)
         self.header.setChecked(False)
+        self.header.setToolTip(prompt_text)
+        self.header.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.header.clicked.connect(self._toggle_all)
         v.addWidget(self.header)
-
-        # Preview del prompt (siempre visible)
-        short = prompt_text.replace("\n", " ").strip()
-        if len(short) > 120:
-            short = short[:120] + "…"
-        self.preview = QLabel(short)
-        self.preview.setWordWrap(True)
-        self.preview.setStyleSheet(
-            "color:#fcd34d; font-size:12px; padding:2px 10px 6px 10px; "
-            "background:transparent; border:none;")
-        self.preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        v.addWidget(self.preview)
 
         # Indicador de estado ("Pensando… Ns" con timer)
         self.status_label = QLabel("⏳ Pensando… 0s")
@@ -998,7 +1101,9 @@ class PromptBlock(QFrame):
         v.addWidget(self.busy_bar)
 
         # Sección 1: Respuesta completa (visible desde el inicio)
-        self.resp_section = CollapsibleSection("� Respuesta de la IA", "#a78bfa")
+        self.resp_section = CollapsibleSection(
+            " Respuesta de la IA", "#a78bfa",
+            icon=os.path.join(ICONS_DIR, "cerebro.svg"))
         v.addWidget(self.resp_section)
 
         # Sección 2: Archivos tocados (aparece cuando la IA toca un archivo,
@@ -1009,7 +1114,9 @@ class PromptBlock(QFrame):
         v.addWidget(self.files_section)
 
         # Sección 3: Resumen (aparece al final con el texto final de la IA)
-        self.summary_section = CollapsibleSection("📋 Resumen", "#22c55e")
+        self.summary_section = CollapsibleSection(
+            "Resumen", "#22c55e",
+            icon=os.path.join(ICONS_DIR, "cerebro.svg"))
         self.summary_section.setVisible(False)
         v.addWidget(self.summary_section)
 
@@ -1021,9 +1128,7 @@ class PromptBlock(QFrame):
         stats_v = QVBoxLayout(self.stats_frame)
         stats_v.setContentsMargins(8, 5, 8, 5)
         stats_v.setSpacing(3)
-        self.stats_pills = QHBoxLayout()
-        self.stats_pills.setContentsMargins(0, 0, 0, 0)
-        self.stats_pills.setSpacing(6)
+        self.stats_pills = _FlowLayout(spacing=6)
         stats_v.addLayout(self.stats_pills)
         # Líneas extra (add_stats / progress)
         self.stats_label = QLabel("")
@@ -1073,7 +1178,7 @@ class PromptBlock(QFrame):
         from utils.markdown_utils import md_to_html
         return md_to_html(text)
 
-    def add_response_text(self, text, color="#e8eaed", mono=False):
+    def add_response_text(self, text, color="#c8ccd4", mono=False):
         """Agrega texto a la sección de respuesta (renderiza markdown)."""
         self._all_text += text
         if mono:
@@ -1093,7 +1198,7 @@ class PromptBlock(QFrame):
         self._stream_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._stream_label.setTextFormat(Qt.RichText)
         self._stream_label.setStyleSheet(
-            "color:#e8eaed; font-size:12px; font-family:sans-serif; "
+            "color:#c8ccd4; font-size:12px; font-family:sans-serif; "
             "background:transparent; border:none;")
         self.resp_section.content_l.addWidget(self._stream_label)
         if not self.resp_section._expanded:
@@ -1113,12 +1218,16 @@ class PromptBlock(QFrame):
 
     def add_summary(self, text):
         """Agrega texto al resumen (respuesta final de la IA, en markdown)."""
+        first = not self._summary_text
         self._summary_text += text
         visible = fmt_ai_text(text)
         if visible:
             self.summary_section.add_text(
-                self._md(visible), color="#22c55e", font_size=12, rich=True)
+                self._md(visible), color="#e8eaed", font_size=12, rich=True)
         self.summary_section.setVisible(True)
+        # Al llegar la respuesta, el resumen nace desplegado
+        if first and not self.summary_section._expanded:
+            self.summary_section.toggle()
 
     def add_tool(self, tool, path, result):
         """Agrega una tool-call como chip visual en la sección de respuesta."""
@@ -1174,13 +1283,17 @@ class PromptBlock(QFrame):
             self.files_section.content_l.addWidget(card)
 
     @staticmethod
-    def _stat_pill(text, color):
-        """Pill coloreada para un stat."""
+    def _stat_pill(text, color, on_click=None):
+        """Pill coloreada para un stat (clicable si on_click)."""
         lbl = QLabel(text)
         lbl.setStyleSheet(
             f"background:{_rgba(color, 0.14)}; color:{color}; "
             f"border:1px solid {_rgba(color, 0.35)}; border-radius:9px; "
             "padding:2px 9px; font-size:11px; font-weight:600;")
+        if on_click:
+            lbl.setCursor(Qt.PointingHandCursor)
+            lbl.setToolTip("Ver el contexto que se envía a la IA")
+            lbl.mousePressEvent = lambda e: on_click()
         return lbl
 
     def add_stats(self, text):
@@ -1197,19 +1310,438 @@ class PromptBlock(QFrame):
             it = self.stats_pills.takeAt(0)
             if it.widget():
                 it.widget().deleteLater()
-        for text, color in (
-                (f"⏱ {elapsed:.0f}s", "#60a5fa"),
-                (f"📤 {prompt_tok:,} enviados", "#f97316"),
-                (f"📥 {completion_tok:,} recibidos", "#22c55e"),
-                (f"⚡ {tps:.1f} tok/s", "#a78bfa"),
-                (f"🤖 {model}", "#8e8e93")):
-            self.stats_pills.addWidget(self._stat_pill(text, color))
-        self.stats_pills.addStretch(1)
+        for text, color, cb in (
+                (f"⏱ {elapsed:.0f}s", "#60a5fa", None),
+                (f"📤 {prompt_tok:,} enviados", "#f97316",
+                 self.inspect_requested.emit),
+                (f"📥 {completion_tok:,} recibidos", "#22c55e", None),
+                (f"⚡ {tps:.1f} tok/s", "#a78bfa", None),
+                (f"🤖 {model}", "#8e8e93", None)):
+            self.stats_pills.addWidget(self._stat_pill(text, color, cb))
         self.stats_frame.setVisible(True)
 
     def add_error(self, text):
         """Agrega un error a la sección de respuesta."""
         self.resp_section.add_text(f"✖ {text}", color="#ff453a", font_size=11)
+
+
+class _DotNav(QWidget):
+    """Columna de puntitos violetas: un punto por prompt del chat.
+
+    - Grupo centrado verticalmente, siempre visible.
+    - Hover → tooltip con hora + texto del prompt.
+    - Clic → salta a ese bloque.
+    """
+    jump = Signal(int)
+    DOT = 6    # diámetro normal
+    GAP = 9    # separación entre puntos
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(16)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self._prompts = []   # [(hora, texto)]
+        self._hover = -1
+        self._current = -1
+
+    def add_prompt(self, time_text, text):
+        self._prompts.append((time_text, text))
+        self.update()
+
+    def set_current(self, idx):
+        self._current = idx
+        self.update()
+
+    def _dot_ys(self):
+        """Centro Y de cada punto, grupo centrado verticalmente."""
+        n = len(self._prompts)
+        if not n:
+            return []
+        h = self.height()
+        step = self.DOT + self.GAP
+        total = n * self.DOT + (n - 1) * self.GAP
+        if total > h - 10 and n > 1:
+            step = (h - 10 - self.DOT) / (n - 1)
+        y0 = (h - (self.DOT + step * (n - 1))) / 2
+        return [y0 + self.DOT / 2 + i * step for i in range(n)]
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        for i, y in enumerate(self._dot_ys()):
+            if i == self._hover:
+                d, color = self.DOT + 4, QColor("#c4b5fd")
+            elif i == self._current:
+                d, color = self.DOT + 2, QColor("#a78bfa")
+            else:
+                d, color = self.DOT, QColor(167, 139, 250, 110)
+            p.setBrush(color)
+            p.drawEllipse(QPointF(self.width() / 2, y), d / 2, d / 2)
+
+    def _hit(self, y):
+        for i, cy in enumerate(self._dot_ys()):
+            if abs(y - cy) <= (self.DOT + self.GAP) / 2:
+                return i
+        return -1
+
+    def mouseMoveEvent(self, e):
+        idx = self._hit(e.position().y())
+        if idx != self._hover:
+            self._hover = idx
+            self.update()
+            if 0 <= idx < len(self._prompts):
+                t, txt = self._prompts[idx]
+                QToolTip.showText(e.globalPosition().toPoint(),
+                                  f"{t}\n{txt}" if t else txt, self)
+
+    def leaveEvent(self, e):
+        self._hover = -1
+        self.update()
+        QToolTip.hideText()
+        super().leaveEvent(e)
+
+    def mousePressEvent(self, e):
+        idx = self._hit(e.position().y())
+        if idx >= 0:
+            self.jump.emit(idx)
+
+
+class _FlowLayout(QLayout):
+    """Layout que fluirea los widgets a múltiples líneas según el ancho
+    disponible (para las pills de stats dentro de bloques angostos)."""
+
+    def __init__(self, parent=None, spacing=6):
+        super().__init__(parent)
+        self.setContentsMargins(0, 0, 0, 0)
+        self._spacing = spacing
+        self._items = []
+
+    def addItem(self, it):
+        self._items.append(it)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Horizontal)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, w):
+        return self._do_layout(QRect(0, 0, w, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        s = QSize()
+        for it in self._items:
+            s = s.expandedTo(it.minimumSize())
+        m = self.contentsMargins()
+        s += QSize(m.left() + m.right(), m.top() + m.bottom())
+        return s
+
+    def _do_layout(self, rect, test):
+        m = self.contentsMargins()
+        x, y = rect.x() + m.left(), rect.y() + m.top()
+        line_h = 0
+        right = rect.right() - m.right()
+        for it in self._items:
+            sw = it.sizeHint().width()
+            sh = it.sizeHint().height()
+            if x + sw > right and line_h > 0:  # nueva línea
+                x = rect.x() + m.left()
+                y += line_h + self._spacing
+                line_h = 0
+            if not test:
+                it.setGeometry(QRect(QPoint(x, y), QSize(sw, sh)))
+            x += sw + self._spacing
+            line_h = max(line_h, sh)
+        return y + line_h - rect.y() + m.bottom()
+
+
+class ContextInspectorDialog(QDialog):
+    """Inspector del contexto enviado a la IA (clic en la pill 📤 enviados).
+
+    - Budget bar: tokens estimados / máximo (prefs).
+    - Desglose por sección con barras de color.
+    - Checkboxes para incluir/excluir partes (persisten en prefs).
+    - Botón para compactar el historial.
+    """
+    COLORS = {
+        "system":   "#8e8e93",
+        "tree":     "#0a84ff",
+        "indexado": "#a78bfa",
+        "contexto": "#eab308",
+        "resumen":  "#32ade6",
+        "history":  "#22c55e",
+    }
+
+    def __init__(self, panel, parent=None):
+        super().__init__(parent or panel)
+        self.panel = panel
+        self.setWindowTitle("Contexto enviado a la IA")
+        self.resize(540, 460)
+        self._build()
+
+    def _build(self):
+        # Reemplazar el contenido (rebuilds al togglear partes)
+        old = getattr(self, "_content", None)
+        if old is not None:
+            old.deleteLater()
+        content = QWidget()
+        self._content = content
+        if self.layout() is None:
+            self.setLayout(QVBoxLayout(self))
+            self.layout().setContentsMargins(0, 0, 0, 0)
+        p = self.panel
+        parts = p._context_breakdown()
+        total = sum(t for _k, _n, t, _on, _p in parts)
+        budget = max(1, int(p.prefs.get("max_context_tokens", 50000)))
+        pct = min(100, int(total * 100 / budget))
+
+        v = QVBoxLayout(content)
+        v.setContentsMargins(16, 14, 16, 12)
+        v.setSpacing(8)
+
+        # ---- Header: globo + total + gear ----
+        head = QHBoxLayout()
+        globe = QLabel("🌐")
+        globe.setStyleSheet("font-size:20px; background:transparent;")
+        head.addWidget(globe)
+        total_lbl = QLabel(f"{total:,}")
+        total_lbl.setStyleSheet(
+            "color:#22c55e; font-size:20px; font-weight:bold; "
+            "background:transparent;")
+        head.addWidget(total_lbl)
+        head.addStretch(1)
+        budget_btn = QPushButton("⚙")
+        budget_btn.setFixedSize(34, 34)
+        budget_btn.setToolTip("Budget máximo de contexto (prefs)")
+        budget_btn.setStyleSheet(
+            "QPushButton{background:#2a2d33;border:none;border-radius:8px;"
+            "color:#dfe1e5;font-size:15px;} QPushButton:hover{background:#353b45;}")
+        budget_btn.clicked.connect(self._edit_budget)
+        head.addWidget(budget_btn)
+        v.addLayout(head)
+
+        # ---- Budget bar ----
+        bl = QLabel(f"Budget: {total:,} / {budget:,} ({pct}%)")
+        bl.setStyleSheet("color:#9da3ae; font-size:12px; background:transparent;")
+        v.addWidget(bl)
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(pct)
+        bar.setFixedHeight(16)
+        bar.setTextVisible(False)
+        bar.setStyleSheet(
+            "QProgressBar{background:#2a2d33;border:none;border-radius:4px;}"
+            "QProgressBar::chunk{background:#22c55e;border-radius:4px;}")
+        v.addWidget(bar)
+
+        v.addSpacing(6)
+        ttl = QLabel("Desglose del próximo envío")
+        ttl.setStyleSheet(
+            "color:#e8eaed; font-size:12px; font-weight:bold; "
+            "background:transparent;")
+        v.addWidget(ttl)
+
+        # ---- Desglose por sección (desplegable con preview) ----
+        max_tok = max([t for _k, _n, t, _on, _p in parts] or [1])
+        if not hasattr(self, "_previews"):
+            self._previews = {}
+        for key, name, toks, included, preview in parts:
+            wrap = QWidget()
+            wv = QVBoxLayout(wrap)
+            wv.setContentsMargins(0, 0, 0, 0)
+            wv.setSpacing(2)
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            # Chevron para desplegar el contenido
+            chevron = QPushButton("▸")
+            chevron.setFixedSize(18, 18)
+            chevron.setStyleSheet(
+                "QPushButton{background:transparent;border:none;color:#8e8e93;"
+                "font-size:11px;} QPushButton:hover{color:#e8eaed;}")
+            row.addWidget(chevron)
+            # Check para purificar (system es fijo)
+            if key != "system":
+                chk = QCheckBox()
+                chk.setChecked(included)
+                chk.setToolTip("Incluir/excluir esta parte del contexto")
+                chk.toggled.connect(
+                    lambda on, k=key: self._toggle_part(k, on))
+                row.addWidget(chk)
+            else:
+                dot = QLabel("●")
+                dot.setStyleSheet(
+                    f"color:{self.COLORS.get(key, '#888')}; "
+                    "background:transparent; border:none;")
+                row.addWidget(dot)
+            nm = QLabel(name)
+            nm.setStyleSheet(
+                "color:#e8eaed; font-size:12px; background:transparent;"
+                + ("text-decoration:line-through; color:#666;"
+                   if not included else ""))
+            row.addWidget(nm, 1)
+            tk = QLabel(f"{toks:,} tok")
+            tk.setStyleSheet(
+                "color:#9da3ae; font-size:11px; background:transparent;")
+            row.addWidget(tk)
+            seg = QProgressBar()
+            seg.setRange(0, max_tok)
+            seg.setValue(toks)
+            seg.setFixedHeight(10)
+            seg.setFixedWidth(140)
+            seg.setTextVisible(False)
+            seg.setStyleSheet(
+                "QProgressBar{background:#2a2d33;border:none;border-radius:3px;}"
+                f"QProgressBar::chunk{{background:{self.COLORS.get(key, '#888')};"
+                "border-radius:3px;}")
+            row.addWidget(seg)
+            wrow = QWidget()
+            wrow.setLayout(row)
+            wrow.setStyleSheet(
+                "QWidget{background:transparent;}")
+            wrow.setStyleSheet(
+                f"QWidget{{background:{_rgba('#e8eaed', 0.03)}; "
+                "border:1px solid #2b2e34; border-radius:6px;}")
+            wv.addWidget(wrow)
+
+            # Preview desplegable: párrafos con check individual
+            para_wrap = QWidget()
+            pv = QVBoxLayout(para_wrap)
+            pv.setContentsMargins(10, 4, 10, 6)
+            pv.setSpacing(2)
+            blocks = [b for b in (preview or "").split("\n\n") if b.strip()]
+            skip_set = set(self.panel.prefs.get("ctx_skip", {}).get(key, {}))
+            if not blocks:
+                empty = QLabel("(vacío)")
+                empty.setStyleSheet(
+                    "color:#666; font-size:11px; background:transparent;")
+                pv.addWidget(empty)
+            for blk in blocks[:80]:
+                prow = QHBoxLayout()
+                prow.setSpacing(6)
+                h = _para_hash(blk)
+                pchk = QCheckBox()
+                pchk.setChecked(h not in skip_set)
+                pchk.setToolTip("Mantener/quitar este párrafo del contexto")
+                pchk.toggled.connect(
+                    lambda on, k=key, hh=h: self._toggle_para(k, hh, on))
+                prow.addWidget(pchk)
+                plbl = QLabel(blk.strip().replace("\n", " ⏎ "))
+                if len(plbl.text()) > 220:
+                    plbl.setText(plbl.text()[:220] + "…")
+                plbl.setStyleSheet(
+                    "color:#c8ccd4; font-size:10px; "
+                    "font-family:Menlo,monospace; background:transparent;")
+                plbl.setWordWrap(True)
+                plbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                prow.addWidget(plbl, 1)
+                pw = QWidget()
+                pw.setLayout(prow)
+                pw.setStyleSheet(
+                    "QWidget{background:transparent;"
+                    "border-bottom:1px solid #23262c;}")
+                pv.addWidget(pw)
+            if len(blocks) > 80:
+                more = QLabel(f"… {len(blocks) - 80} párrafos más")
+                more.setStyleSheet("color:#666; font-size:10px;")
+                pv.addWidget(more)
+            prev = QScrollArea()
+            prev.setWidgetResizable(True)
+            prev.setWidget(para_wrap)
+            prev.setMaximumHeight(180)
+            prev.setStyleSheet(
+                "QScrollArea{background:#16181c;"
+                "border:1px solid #2b2e34;border-radius:6px;}")
+            prev.setVisible(False)
+            wv.addWidget(prev)
+
+            def _toggle_prev(checked, pv=prev, ch=chevron):
+                pv.setVisible(checked)
+                ch.setText("▼" if checked else "▸")
+            chevron.setCheckable(True)
+            chevron.toggled.connect(_toggle_prev)
+            v.addWidget(wrap)
+
+        v.addStretch(1)
+
+        # ---- Acciones ----
+        btns = QHBoxLayout()
+        restore = QPushButton("↺ Restaurar todo")
+        restore.setToolTip("Vuelve a incluir todos los párrafos excluidos")
+        restore.clicked.connect(self._restore_all)
+        btns.addWidget(restore)
+        self.compact_btn = QPushButton("🧹 Compactar historial (deja últimos 4)")
+        self.compact_btn.setToolTip(
+            "Quita los mensajes viejos del historial. El resumen ya está "
+            "guardado en ns-code/resumen.txt y se envía igual.")
+        self.compact_btn.clicked.connect(self._compact)
+        btns.addWidget(self.compact_btn)
+        btns.addStretch(1)
+        close = QPushButton("Cerrar")
+        close.clicked.connect(self.accept)
+        btns.addWidget(close)
+        v.addLayout(btns)
+        self.layout().addWidget(content)
+
+    def _toggle_part(self, key, on):
+        p = self.panel
+        p.prefs.setdefault("ctx_parts", {})
+        p.prefs["ctx_parts"][key] = on
+        p.settings.setValue("prefs", json.dumps(p.prefs))
+        # Rebuild con el nuevo desglose
+        self._build()
+
+    def _toggle_para(self, key, para_hash, on):
+        """Mantiene/quita un párrafo individual del contexto."""
+        p = self.panel
+        sk = p.prefs.setdefault("ctx_skip", {}).setdefault(key, {})
+        if on:
+            sk.pop(para_hash, None)
+        else:
+            sk[para_hash] = True
+        p.settings.setValue("prefs", json.dumps(p.prefs))
+        self._build()
+
+    def _restore_all(self):
+        """Vuelve a incluir todos los párrafos excluidos."""
+        p = self.panel
+        p.prefs["ctx_skip"] = {}
+        p.settings.setValue("prefs", json.dumps(p.prefs))
+        self._build()
+
+    def _compact(self):
+        removed = self.panel._compact_history()
+        if removed:
+            self._build()
+        else:
+            self.compact_btn.setText("Historial ya compacto")
+
+    def _edit_budget(self):
+        p = self.panel
+        val, ok = QInputDialog.getInt(
+            self, "Budget de contexto", "Tokens máximos:",
+            int(p.prefs.get("max_context_tokens", 50000)), 1000, 1000000, 1000)
+        if ok:
+            p.prefs["max_context_tokens"] = val
+            p.settings.setValue("prefs", json.dumps(p.prefs))
+            self._build()
 
 
 class ChatPanel(QWidget):
@@ -1269,47 +1801,25 @@ class ChatPanel(QWidget):
         self.h_split.setHandleWidth(4)
         outer.addWidget(self.h_split)
 
-        # ---- Splitter vertical: top | middle | bottom ----
+        # ---- Splitter vertical: middle | bottom ----
+        # (los controles de modelo van al header del panel contenedor)
         self.v_split = QSplitter(Qt.Vertical)
         self.v_split.setChildrenCollapsible(False)
         self.v_split.setHandleWidth(4)
         self.h_split.addWidget(self.v_split)
 
-        # ==== SUB-PANEL TOP: modelo + controles ====
-        top = QFrame()
-        top.setObjectName("chatTopPanel")
-        top_l = QVBoxLayout(top)
-        top_l.setContentsMargins(6, 6, 6, 6)
-        top_l.setSpacing(4)
-        row1 = QHBoxLayout()
-        row1.setSpacing(4)
+        # ==== Controles de modelo (los hostea el header del Panel) ====
         self.model_combo = QComboBox()
         self.model_combo.setToolTip("Modelo de IA")
         self.model_combo.setMinimumWidth(120)
-        row1.addWidget(self.model_combo, 1)
         self.btn_pick = QPushButton("⚙")
         self.btn_pick.setFixedSize(28, 28)
         self.btn_pick.setToolTip("Modelos y providers")
         self.btn_pick.clicked.connect(self._open_model_picker)
-        row1.addWidget(self.btn_pick)
-        self.btn_prefs = QPushButton("🔧")
-        self.btn_prefs.setFixedSize(28, 28)
-        self.btn_prefs.setToolTip("Preferencias (modelos, voz, tokens)")
-        self.btn_prefs.clicked.connect(self._open_prefs)
-        row1.addWidget(self.btn_prefs)
         self.btn_refresh = QPushButton("↻")
         self.btn_refresh.setFixedSize(28, 28)
         self.btn_refresh.setToolTip("Re-descubrir modelos")
         self.btn_refresh.clicked.connect(self.refresh_models)
-        row1.addWidget(self.btn_refresh)
-        self.btn_toggle_right = QPushButton("▶")
-        self.btn_toggle_right.setFixedSize(28, 28)
-        self.btn_toggle_right.setCheckable(True)
-        self.btn_toggle_right.setToolTip("Mostrar/ocultar panel lateral")
-        self.btn_toggle_right.clicked.connect(self._toggle_right_panel)
-        row1.addWidget(self.btn_toggle_right)
-        top_l.addLayout(row1)
-        self.v_split.addWidget(top)
 
         # ==== SUB-PANEL MIDDLE: chat ====
         mid = QFrame()
@@ -1317,18 +1827,28 @@ class ChatPanel(QWidget):
         mid_l = QVBoxLayout(mid)
         mid_l.setContentsMargins(6, 0, 6, 0)
         mid_l.setSpacing(0)
-        # Scroll area con bloques de prompt
+        # Scroll area con bloques de prompt (sin scrollbars: el contenido
+        # se adapta al ancho y se scrollea con rueda/trackpad)
         self.chat_scroll = QScrollArea()
         self.chat_scroll.setWidgetResizable(True)
         self.chat_scroll.setObjectName("chatView")
         self.chat_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chat_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         chat_container = QWidget()
         self.chat_layout = QVBoxLayout(chat_container)
         self.chat_layout.setContentsMargins(0, 0, 0, 0)
-        self.chat_layout.setSpacing(6)
+        self.chat_layout.setSpacing(7)
         self.chat_layout.addStretch(1)
         self.chat_scroll.setWidget(chat_container)
-        mid_l.addWidget(self.chat_scroll)
+        # Columna de puntitos (navigator) a la izquierda del chat
+        mid_row = QHBoxLayout()
+        mid_row.setContentsMargins(0, 0, 0, 0)
+        mid_row.setSpacing(2)
+        self._dotnav = _DotNav()
+        self._dotnav.jump.connect(self._jump_to_prompt)
+        mid_row.addWidget(self._dotnav)
+        mid_row.addWidget(self.chat_scroll, 1)
+        mid_l.addLayout(mid_row)
         self.v_split.addWidget(mid)
         # Estado de bloques
         self._current_block = None
@@ -1340,9 +1860,11 @@ class ChatPanel(QWidget):
         bot_l = QVBoxLayout(bot)
         bot_l.setContentsMargins(6, 0, 6, 6)
         bot_l.setSpacing(4)
-        # Checkboxes
+        # Checkboxes + selector de modelo (a la izquierda de todo)
         ctx_row = QHBoxLayout()
         ctx_row.setSpacing(8)
+        self.model_combo.setMaximumWidth(220)
+        ctx_row.addWidget(self.model_combo)
         self.chk_no_ctx = QCheckBox("Sin contexto")
         self.chk_no_ctx.setToolTip("Envía SIN contexto del proyecto (ahorra tokens)")
         self.chk_no_ctx.setStyleSheet("font-size:11px; color:#888;")
@@ -1369,85 +1891,59 @@ class ChatPanel(QWidget):
         self._transcribe_timer = QTimer(self)
         self._transcribe_timer.timeout.connect(self._on_transcribe_tick)
         self._transcribe_seconds = 0
-        # Input + botones
-        input_row = QHBoxLayout()
+        # Input compacto estilo Devin: card redondeada de una línea que
+        # crece sola al escribir; botones chicos inline
+        input_card = QFrame()
+        input_card.setObjectName("inputCard")
+        input_card.setStyleSheet(
+            "QFrame#inputCard { background:#22252b; border:1px solid #33363c; "
+            "border-radius:10px; }"
+            "QFrame#inputCard:hover { border-color:#4a4e57; }")
+        input_row = QHBoxLayout(input_card)
+        input_row.setContentsMargins(10, 4, 6, 4)
         input_row.setSpacing(4)
         self.input = ChatInput()
-        self.input.setFixedHeight(60)
         self.input.setPlaceholderText("Escribe aquí… (Enter envía, Shift+Enter salto)")
         self.input.sent.connect(self.send)
         input_row.addWidget(self.input, 1)
-        col = QVBoxLayout()
-        col.setSpacing(4)
-        self.btn_send = self._icon_btn("enviar", "#0a84ff", "#fff", "Enviar")
-        self.btn_send.clicked.connect(self.send)
-        col.addWidget(self.btn_send)
-        self.btn_polish = self._icon_btn("pulir", "#a855f7", "#fff", "Pulir texto")
+        self.btn_polish = self._icon_btn("pulir", "transparent", "#fff",
+                                         "Pulir texto", size=28)
         self.btn_polish.clicked.connect(self._polish_text)
-        col.addWidget(self.btn_polish)
-        self.btn_mic = self._icon_btn("mic", "#6b7280", "#fff", "Hablar: clic para grabar")
+        input_row.addWidget(self.btn_polish)
+        self.btn_mic = self._icon_btn("mic", "#3a3d44", "#fff",
+                                      "Hablar: clic para grabar", size=28)
         self.btn_mic.clicked.connect(self._toggle_voice)
-        col.addWidget(self.btn_mic)
-        self.btn_stop = self._icon_btn("detener", "#ff453a", "#fff", "Detener")
+        input_row.addWidget(self.btn_mic)
+        self.btn_stop = self._icon_btn("detener", "#ff453a", "#fff",
+                                       "Detener", size=28)
         self.btn_stop.setEnabled(False)
+        self.btn_stop.setVisible(False)
         self.btn_stop.clicked.connect(self.stop)
-        col.addWidget(self.btn_stop)
-        input_row.addLayout(col)
-        bot_l.addLayout(input_row)
+        input_row.addWidget(self.btn_stop)
+        self.btn_send = self._icon_btn("enviar", "#0a84ff", "#fff",
+                                       "Enviar", size=28)
+        self.btn_send.clicked.connect(self.send)
+        input_row.addWidget(self.btn_send)
+        bot_l.addWidget(input_card)
         self.v_split.addWidget(bot)
 
         # Tamaños iniciales del splitter vertical (top chico, medio grande, bottom chico)
-        self.v_split.setSizes([40, 300, 120])
-
-        # ==== SUB-PANEL RIGHT: lateral flotante ====
-        self.right_panel = QFrame()
-        self.right_panel.setObjectName("chatRightPanel")
-        right_l = QVBoxLayout(self.right_panel)
-        right_l.setContentsMargins(6, 6, 6, 6)
-        right_l.setSpacing(4)
-        # Header del panel lateral
-        rhead = QHBoxLayout()
-        rhead.setSpacing(4)
-        rlbl = QLabel("Prompt Navigator")
-        rlbl.setStyleSheet("font-weight:bold; color:#a78bfa;")
-        rhead.addWidget(rlbl)
-        rhead.addStretch(1)
-        self.btn_right_close = QPushButton("◀")
-        self.btn_right_close.setFixedSize(24, 24)
-        self.btn_right_close.setToolTip("Ocultar panel lateral")
-        self.btn_right_close.clicked.connect(lambda: self._toggle_right_panel(False))
-        rhead.addWidget(self.btn_right_close)
-        right_l.addLayout(rhead)
-        # Lista de prompts (navigator)
-        self.prompt_list = QListWidget()
-        self.prompt_list.setObjectName("promptNavList")
-        self.prompt_list.setToolTip("Clic para saltar a un prompt del chat")
-        self.prompt_list.itemClicked.connect(self._on_prompt_nav_click)
-        right_l.addWidget(self.prompt_list, 1)
-        # Sección de info/stats
-        rstats = QLabel("Sin actividad")
-        rstats.setStyleSheet("font-size:11px; color:#888;")
-        rstats.setWordWrap(True)
-        right_l.addWidget(rstats)
-        self._right_stats = rstats
-        self.h_split.addWidget(self.right_panel)
-        # Panel lateral oculto al inicio
-        self.right_panel.setVisible(False)
-        self.h_split.setSizes([400, 0])
+        self.v_split.setSizes([380, 84])
 
         # Cargar modelos al inicio
         QTimer.singleShot(100, self.refresh_models)
 
-    def _icon_btn(self, name, bg, fg, tip):
+    def _icon_btn(self, name, bg, fg, tip, size=36):
         p = os.path.join(ICONS_DIR, name + ".svg")
         b = QPushButton()
-        b.setFixedSize(36, 36)
+        b.setFixedSize(size, size)
         if os.path.exists(p):
             b.setIcon(QIcon(p))
-            b.setIconSize(QSize(24, 24))
+            b.setIconSize(QSize(int(size * 0.62), int(size * 0.62)))
         b.setToolTip(tip)
         b.setStyleSheet(
-            f"QPushButton {{ background:{bg}; border:none; border-radius:8px; }}"
+            f"QPushButton {{ background:{bg}; border:none; "
+            f"border-radius:{size // 2}px; }}"
             f"QPushButton:hover {{ opacity:0.85; }}"
             f"QPushButton:disabled {{ background:#555; }}")
         return b
@@ -1491,6 +1987,64 @@ class ChatPanel(QWidget):
         except OSError:
             pass
 
+    def _ctx_on(self, key):
+        """¿Está incluida esta parte del contexto? (prefs persistentes)."""
+        return self.prefs.get("ctx_parts", {}).get(key, True)
+
+    def _context_breakdown(self):
+        """[(key, nombre, tokens_estimados, incluido, preview)] del envío."""
+        parts = []
+        if not self.tools:
+            return parts
+        skip = lambda k: set(self.prefs.get("ctx_skip", {}).get(k, {}))
+        sys_txt = SYSTEM_PROMPT.format(folder=self.tools.root)
+        parts.append(("system", "System prompt", len(sys_txt) // 4, True,
+                      sys_txt))
+        tree = filter_skipped(folder_snapshot(self.tools.root), skip("tree"))
+        parts.append(("tree", "Árbol de archivos",
+                      (len(tree) + 40) // 4, self._ctx_on("tree"), tree))
+        for key, name in (("indexado", "indexado.txt"),
+                          ("contexto", "contexto.txt"),
+                          ("resumen", "resumen.txt")):
+            path = os.path.join(self.tools.root, NS_DIR, f"{key}.txt")
+            if not os.path.exists(path):
+                path = os.path.join(self.tools.root, f"{key}.txt")  # legacy
+            txt = ""
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as f:
+                        txt = f.read(MAX_INDEX)
+                except OSError:
+                    pass
+            txt = filter_skipped(txt, skip(key))
+            parts.append((key, name, len(txt) // 4, self._ctx_on(key), txt))
+        slim = Worker(None, None, None, [])._slim_history(self.history) \
+            if self.history else []
+        hist_txt = "\n".join(
+            f"[{m.get('role')}] {m.get('content', '')[:400]}" for m in slim)
+        parts.append(("history",
+                      f"Historial ({len(self.history)} mensajes)",
+                      len(hist_txt) // 4, self._ctx_on("history"), hist_txt))
+        return parts
+
+    def _compact_history(self):
+        """Deja solo los últimos 4 mensajes del historial. Devuelve cuántos
+        quitó (el resumen ya vive en ns-code/resumen.txt)."""
+        if len(self.history) <= 4:
+            return 0
+        removed = len(self.history) - 4
+        self.history = self.history[-4:]
+        self._save_conversation()
+        return removed
+
+    def _open_context_inspector(self):
+        """Popup con el desglose del contexto a enviar."""
+        if not self.tools:
+            self._add_standalone_message(
+                "Seleccioná una carpeta de trabajo primero.", "error")
+            return
+        ContextInspectorDialog(self).exec()
+
     def _append_resumen(self, block):
         """Agrega una entrada a ns-code/resumen.txt al terminar un prompt."""
         if not self.tools or not block:
@@ -1529,6 +2083,14 @@ class ChatPanel(QWidget):
         folder_name = os.path.basename(self.tools.root) or "proyecto"
         n = 0
         cur = None
+        # Hora aproximada de la sesión previa: mtime del conversacion.json
+        try:
+            sess_hm = datetime.fromtimestamp(
+                os.path.getmtime(os.path.join(self._ns_dir(),
+                                              "conversacion.json"))
+            ).strftime("%H:%M")
+        except OSError:
+            sess_hm = ""
         for m in history:
             role = m.get("role")
             text = m.get("content", "")
@@ -1541,61 +2103,59 @@ class ChatPanel(QWidget):
                     lambda p, b=cur: self._accept_file(b, p))
                 cur.reject_requested.connect(
                     lambda p, b=cur: self._reject_file(b, p))
+                cur.inspect_requested.connect(self._open_context_inspector)
                 cur._done = True
-                cur.status_label.setText("✓ sesión anterior")
-                cur.status_label.setStyleSheet(
-                    "color:#8e8e93; font-size:11px; font-weight:bold; "
-                    "padding:0 10px 2px 10px; background:transparent; border:none;")
+                cur.status_label.setVisible(False)
                 cur.busy_bar.setVisible(False)
                 self._blocks.append(cur)
-                self.chat_layout.insertWidget(self.chat_layout.count() - 1, cur)
-                short = text.replace("\n", " ").strip()
-                nav = short[:60] + ("…" if len(short) > 60 else "")
-                it = QListWidgetItem(f"{pid}: {nav}")
-                it.setData(Qt.UserRole, len(self._blocks) - 1)
-                self.prompt_list.addItem(it)
+                self._insert_chat(cur, sess_hm)
+                self._dotnav.add_prompt(sess_hm, text)
+                self._dotnav.set_current(len(self._blocks) - 1)
             elif role == "assistant" and cur is not None:
                 if '"tool"' in text:
                     cur.add_response_text(text, color="#8e8e93", mono=True)
                 elif text.strip():
                     cur.add_summary(text.strip())
+                u = m.get("usage")
+                if isinstance(u, dict):
+                    cur.set_final_stats(
+                        u.get("completion", 0), u.get("tps", 0),
+                        u.get("prompt", 0), u.get("model", ""),
+                        u.get("elapsed", 0))
         self._prompt_counter = n
         if n:
-            self._add_standalone_message(
-                f"📂 Conversación restaurada: {n} prompt(s) anteriores", "stats")
+            self._show_restored_banner(n)
 
-    def _toggle_right_panel(self, on=None):
-        """Muestra/oculta el panel lateral derecho."""
-        if on is None:
-            on = not self.right_panel.isVisible()
-        self.right_panel.setVisible(on)
-        self.btn_toggle_right.setChecked(on)
-        self.btn_toggle_right.setText("◀" if on else "▶")
-        if on:
-            # Darle tamaño al panel lateral
-            sizes = self.h_split.sizes()
-            if len(sizes) >= 2 and sizes[1] < 50:
-                self.h_split.setSizes([350, 150])
+    def _show_restored_banner(self, n):
+        """'📂 N prompts anteriores' en el header del panel contenedor."""
+        banner = QLabel(f"📂 {n} prompts anteriores")
+        banner.setStyleSheet(
+            "color:#8e8e93; font-size:11px; background:transparent; "
+            "border:none;")
+        banner.setToolTip("Conversación restaurada de la sesión anterior")
+        # Buscar el Panel contenedor (tiene .header)
+        p = self.parent()
+        while p is not None and not hasattr(p, "header"):
+            p = p.parent()
+        if p is not None:
+            p.header.add_widget(banner)
 
-    def _on_prompt_nav_click(self, item):
-        """Scroll al bloque de prompt seleccionado en el navigator."""
-        idx = item.data(Qt.UserRole)
-        if idx is None or not isinstance(idx, int):
+    def _jump_to_prompt(self, idx):
+        """Clic en un punto del navigator → scroll al bloque + resaltar."""
+        if not (0 <= idx < len(self._blocks)):
             return
-        if 0 <= idx < len(self._blocks):
-            block = self._blocks[idx]
-            self.chat_scroll.ensureWidgetVisible(block)
-            # Resaltar brevemente
-            block.header.setStyleSheet(
-                "QPushButton { background:#eab30844; color:#eab308; border:none; "
-                "border-radius:6px; padding:6px 10px; font-size:12px; font-weight:bold; "
-                "text-align:left; }")
-            from PySide6.QtCore import QTimer as _QTimer
-            _QTimer.singleShot(1000, lambda: block.header.setStyleSheet(
-                "QPushButton { background:#eab30822; color:#eab308; border:none; "
-                "border-radius:6px; padding:6px 10px; font-size:12px; font-weight:bold; "
-                "text-align:left; }"
-                "QPushButton:hover { background:#eab30833; }"))
+        block = self._blocks[idx]
+        self.chat_scroll.ensureWidgetVisible(block)
+        # Resaltar brevemente
+        block.header.setStyleSheet(
+            "QPushButton { background:#eab30844; color:#eab308; border:none; "
+            "border-radius:6px; padding:6px 10px; font-size:12px; font-weight:bold; "
+            "text-align:left; }")
+        QTimer.singleShot(1000, lambda: block.header.setStyleSheet(
+            "QPushButton { background:#eab30822; color:#eab308; border:none; "
+            "border-radius:6px; padding:6px 10px; font-size:12px; font-weight:bold; "
+            "text-align:left; }"
+            "QPushButton:hover { background:#eab30833; }"))
 
     # ---- Providers / modelos ----
 
@@ -1844,21 +2404,12 @@ class ChatPanel(QWidget):
                 block.add_error(text)
             elif kind == "stats":
                 block.add_stats(text)
-                self._right_stats.setText(text)
             elif kind == "user":
                 # No debería llegar aquí, el user se maneja en send()
                 pass
         else:
             # Mensaje suelto (sin prompt block) — crear un mini-bloque
             self._add_standalone_message(text, kind)
-
-        # Agregar al prompt navigator
-        if kind == "user" and prompt_id:
-            short = text.replace("\n", " ").strip()
-            title = short[:60] + ("…" if len(short) > 60 else "")
-            it = QListWidgetItem(f"{prompt_id}: {title}")
-            it.setData(Qt.UserRole, len(self._blocks))
-            self.prompt_list.addItem(it)
 
     def _add_standalone_message(self, text, kind):
         """Agrega un mensaje sin prompt block (errores, voz, etc.)."""
@@ -1869,7 +2420,43 @@ class ChatPanel(QWidget):
         lbl.setStyleSheet(
             f"color:{color}; font-size:12px; padding:4px 8px; "
             f"background:#22242a; border-radius:6px;")
-        self.chat_layout.insertWidget(self.chat_layout.count() - 1, lbl)
+        from datetime import datetime
+        self._insert_chat(lbl, datetime.now().strftime("%H:%M"))
+
+    @staticmethod
+    def _hr(time_text=""):
+        """Divisor entre tarjetas: línea amarilla centrada con la hora,
+        con 15px de aire arriba y abajo (8 de margen + 7 de spacing)."""
+        wrap = QWidget()
+        wrap.setContentsMargins(0, 8, 0, 8)
+        l = QHBoxLayout(wrap)
+        l.setContentsMargins(0, 0, 0, 0)
+        l.setSpacing(6)
+        l.addStretch(1)
+        ln_ss = "background:#eab308; border:none; border-radius:1px;"
+        ln = QFrame()
+        ln.setFixedSize(50, 2)
+        ln.setStyleSheet(ln_ss)
+        l.addWidget(ln)
+        if time_text:
+            lbl = QLabel(time_text)
+            lbl.setStyleSheet(
+                "color:#eab308; font-size:10px; font-weight:bold; "
+                "background:transparent; border:none;")
+            l.addWidget(lbl)
+            ln2 = QFrame()
+            ln2.setFixedSize(50, 2)
+            ln2.setStyleSheet(ln_ss)
+            l.addWidget(ln2)
+        l.addStretch(1)
+        return wrap
+
+    def _insert_chat(self, w, time_text=""):
+        """Inserta un widget en el chat con separador hr si ya hay contenido."""
+        if self.chat_layout.count() > 1:  # hay algo además del stretch final
+            self.chat_layout.insertWidget(self.chat_layout.count() - 1,
+                                          self._hr(time_text))
+        self.chat_layout.insertWidget(self.chat_layout.count() - 1, w)
 
     def send(self):
         if self.worker is not None and self.worker.isRunning():
@@ -1902,15 +2489,13 @@ class ChatPanel(QWidget):
         block.reject_requested.connect(
             lambda p, b=block: self._reject_file(b, p))
         block.open_file.connect(self.open_file_requested.emit)
+        block.inspect_requested.connect(self._open_context_inspector)
         self._blocks.append(block)
         self._current_block = block
-        self.chat_layout.insertWidget(self.chat_layout.count() - 1, block)
-        # Agregar al prompt navigator
-        short = text.replace("\n", " ").strip()
-        nav_title = short[:60] + ("…" if len(short) > 60 else "")
-        it = QListWidgetItem(f"{prompt_id}: {nav_title}")
-        it.setData(Qt.UserRole, len(self._blocks) - 1)
-        self.prompt_list.addItem(it)
+        self._insert_chat(block, block.timestamp[:5])
+        # Agregar al prompt navigator (puntitos)
+        self._dotnav.add_prompt(block.timestamp[:5], text)
+        self._dotnav.set_current(len(self._blocks) - 1)
         # Scroll al final
         self.chat_scroll.ensureWidgetVisible(block)
         # Enviar
@@ -1923,7 +2508,10 @@ class ChatPanel(QWidget):
                             session_id=session_id,
                             max_tools=int(self.prefs.get("max_tools", 50)),
                             tool_limit_enabled=bool(self.prefs.get("tool_limit_enabled", True)),
-                            request_timeout=int(self.prefs.get("request_timeout", 600)))
+                            request_timeout=int(self.prefs.get("request_timeout", 600)),
+                            ctx_parts=dict(self.prefs.get("ctx_parts", {})),
+                            ctx_skip={k: dict(v) for k, v in
+                                      self.prefs.get("ctx_skip", {}).items()})
         self.worker.msg.connect(self.append_chat)
         self.worker.progress.connect(lambda s: self.append_chat(s, "stats"))
         self.worker.files_changed.connect(self.files_changed.emit)
@@ -1936,6 +2524,7 @@ class ChatPanel(QWidget):
         self.worker.finished_run.connect(self.on_done)
         self.btn_send.setEnabled(False)
         self.btn_stop.setEnabled(True)
+        self.btn_stop.setVisible(True)
         self.worker.start()
 
     def _on_file_diff(self, path, tool, entries):
@@ -2034,6 +2623,7 @@ class ChatPanel(QWidget):
     def on_done(self):
         self.btn_send.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.btn_stop.setVisible(False)
         if self.worker is not None:
             u = self.worker.usage
             tps = u["completion"] / u["gen_time"] if u["gen_time"] > 0 else 0
@@ -2043,10 +2633,16 @@ class ChatPanel(QWidget):
                     self.worker.model, self._current_block._elapsed)
                 self._current_block.finish_status()
                 self._append_resumen(self._current_block)
+            # Guardar usage en el último mensaje assistant (pills al restaurar)
+            for m in reversed(self.history):
+                if m.get("role") == "assistant":
+                    m["usage"] = {
+                        "prompt": u["prompt"], "completion": u["completion"],
+                        "tps": round(tps, 1), "model": self.worker.model,
+                        "elapsed": (self._current_block._elapsed
+                                    if self._current_block else 0)}
+                    break
             self._save_conversation()
-            self._right_stats.setText(
-                f"{u['completion']} tok · {tps:.1f} tok/s · "
-                f"prompt: {u['prompt']} tok · 🤖 {self.worker.model}")
 
     def stop(self):
         if self.worker is not None and self.worker.isRunning():
