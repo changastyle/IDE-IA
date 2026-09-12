@@ -24,8 +24,12 @@ import sys
 import shlex
 import subprocess
 
-from PySide6.QtCore import Qt, QMimeData, QPoint, Signal, QProcess, QSize, QTimer
-from PySide6.QtGui import QDrag, QColor, QPainter, QFont, QAction, QIcon
+import pty as _pty
+import signal as _signal
+from PySide6.QtCore import (Qt, QMimeData, QPoint, Signal, QProcess, QSize,
+                            QTimer, QSocketNotifier)
+from PySide6.QtGui import (QDrag, QColor, QPainter, QFont, QAction, QIcon,
+                           QTextCursor, QKeySequence)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSplitter, QPlainTextEdit, QMenu, QFileDialog,
@@ -430,8 +434,46 @@ class HotBar(QFrame):
         v.addStretch(1)
 
 
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][B0]|\r")
+
+
+class TermEdit(QPlainTextEdit):
+    """Editor de terminal: intercepta el teclado y lo manda al pty."""
+
+    send_data = Signal(bytes)
+
+    def keyPressEvent(self, e):
+        key, text = e.key(), e.text()
+        if e.matches(QKeySequence.Copy) or (e.modifiers() & Qt.ControlModifier
+                                            and key == Qt.Key_C
+                                            and self.textCursor().hasSelection()):
+            super().keyPressEvent(e)
+            return
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            self.send_data.emit(b"\r")
+        elif key == Qt.Key_Backspace:
+            self.send_data.emit(b"\x7f")
+        elif key == Qt.Key_Up:
+            self.send_data.emit(b"\x1b[A")
+        elif key == Qt.Key_Down:
+            self.send_data.emit(b"\x1b[B")
+        elif key == Qt.Key_Right:
+            self.send_data.emit(b"\x1b[C")
+        elif key == Qt.Key_Left:
+            self.send_data.emit(b"\x1b[D")
+        elif key == Qt.Key_Home:
+            self.send_data.emit(b"\x1b[H")
+        elif key == Qt.Key_End:
+            self.send_data.emit(b"\x1b[F")
+        elif text:
+            self.send_data.emit(text.encode("utf-8"))
+        # teclas sin efecto (tab, etc. las maneja la shell vía pty)
+        e.accept()
+
+
 class TerminalTab(QWidget):
-    """Una pestaña de terminal: shell zsh interactiva + QProcess."""
+    """Una pestaña de terminal real: zsh sobre un pty, escribís directo."""
 
     text_received = Signal(str)
     finished = Signal(int)  # código de salida
@@ -440,41 +482,142 @@ class TerminalTab(QWidget):
         super().__init__(parent)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
-        self.out = QPlainTextEdit()
-        self.out.setReadOnly(True)
+        self.out = TermEdit()
         self.out.setFont(QFont("Menlo", 12))
         self.out.setStyleSheet(
             "QPlainTextEdit{background:#141519;color:#d7dae0;border:none;}")
-        self.out.setPlaceholderText("Terminal…")
+        self.out.setPlaceholderText("Terminal… (escribí acá)")
+        self.out.send_data.connect(self.proc_write)
         v.addWidget(self.out)
-        self.proc = QProcess(self)
-        self.proc.setProcessChannelMode(QProcess.MergedChannels)
-        self.proc.setWorkingDirectory(cwd or os.path.expanduser("~"))
-        self.proc.readyReadStandardOutput.connect(self._on_out)
-        self.proc.finished.connect(self._on_fin)
-        self.proc.start("/bin/zsh", ["-i"])
+        # Pty: shell real con edición de línea, historial y tab-completion
+        self.pid, self.fd = _pty.fork()
+        if self.pid == 0:  # hijo: zsh interactivo en el pty
+            os.environ["TERM"] = "xterm-256color"
+            if cwd and os.path.isdir(cwd):
+                try:
+                    os.chdir(cwd)
+                except OSError:
+                    pass
+            try:
+                os.execv("/bin/zsh", ["zsh", "-i"])
+            except Exception:
+                os._exit(1)
+        try:
+            import fcntl, termios, struct
+            fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
+                        struct.pack("HHHH", 30, 120, 0, 0))
+        except OSError:
+            pass
+        # Emulación de terminal real (pyte): \r, cursor, clear, colores…
+        try:
+            import pyte
+            self._screen = pyte.HistoryScreen(120, 30, history=2000)
+            self._stream = pyte.ByteStream(self._screen)
+        except ImportError:
+            self._screen = None
+        self._scrollback = []
+        self.notifier = QSocketNotifier(self.fd, QSocketNotifier.Read, self)
+        self.notifier.activated.connect(self._read)
+        self._alive = True
 
-    def _on_out(self):
-        text = str(self.proc.readAllStandardOutput(), "utf-8", "replace")
-        self.out.appendPlainText(text.rstrip())
-        self.text_received.emit(text)
+    def update_winsize(self):
+        """Ajusta cols/rows del pty al tamaño real del widget (para que ls
+        y los prompts usen el ancho correcto)."""
+        if not self._alive:
+            return
+        try:
+            import fcntl, termios, struct
+            fm = self.out.fontMetrics()
+            cols = max(20, self.out.viewport().width()
+                       // max(1, fm.horizontalAdvance("M")))
+            rows = max(5, self.out.viewport().height() // max(1, fm.lineSpacing()))
+            fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
+                        struct.pack("HHHH", rows, cols, 0, 0))
+            if self._screen is not None:
+                self._screen.resize(rows, cols)
+            os.killpg(os.getpgid(self.pid), _signal.SIGWINCH)
+        except (OSError, ProcessLookupError):
+            pass
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.update_winsize()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QTimer.singleShot(0, self.update_winsize)
+
+    def _read(self):
+        try:
+            data = os.read(self.fd, 65536)
+        except OSError:
+            data = b""
+        if not data:
+            # La shell cerró el pty → terminó
+            if self._alive:
+                self._alive = False
+                self.notifier.setEnabled(False)
+                self.out.appendPlainText("— shell terminada —")
+                self.finished.emit(0)
+            return
+        text = _ANSI_RE.sub("", data.decode("utf-8", "replace"))
+        if self._screen is not None:
+            self._stream.feed(data)
+            self._render()
+        else:
+            self.out.appendPlainText(text.rstrip())
+        self.text_received.emit("")
+
+    @staticmethod
+    def _dict_line(d, cols):
+        return "".join(d.get(x, " ").data for x in range(cols)).rstrip()
+
+    def _render(self):
+        """Vuelca scrollback + pantalla de pyte al widget."""
+        s = self._screen
+        while s.history.top:
+            line = s.history.top.popleft()
+            self._scrollback.append(self._dict_line(line, s.columns))
+        visible = [s.display[y].rstrip() for y in range(s.lines)]
+        while visible and not visible[-1].strip():
+            visible.pop()
+        self.out.setPlainText("\n".join(self._scrollback + visible))
+        cur = self.out.textCursor()
+        cur.movePosition(QTextCursor.End)
+        self.out.setTextCursor(cur)
 
     def _on_fin(self, code, _status):
         self.out.appendPlainText(f"— shell terminada (código {code}) —")
         self.finished.emit(code)
 
     def run_command(self, cmd):
-        self.out.appendPlainText(f"$ {cmd}")
-        self.proc.write((cmd + "\n").encode("utf-8"))
+        self.proc_write(cmd + "\r")
+
+    def proc_write(self, data):
+        if not self._alive:
+            return
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        try:
+            os.write(self.fd, data)
+        except OSError:
+            self._alive = False
 
     def is_running(self):
-        return self.proc.state() != QProcess.NotRunning
+        return self._alive
 
     def kill(self):
-        if self.is_running():
-            self.proc.terminate()
-            if not self.proc.waitForFinished(1500):
-                self.proc.kill()
+        if self._alive:
+            try:
+                os.killpg(os.getpgid(self.pid), _signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            self._alive = False
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+        self.notifier.setEnabled(False)
 
 
 class TerminalOverlay(QFrame):
