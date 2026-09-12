@@ -40,6 +40,11 @@ def play_icon():
     return QIcon(p) if os.path.exists(p) else QIcon()
 
 
+def play_bookmark_icon():
+    p = os.path.join(ICONS_DIR, "play_bookmark.svg")
+    return QIcon(p) if os.path.exists(p) else QIcon()
+
+
 class FilesPanel(QWidget):
     """Panel izquierdo: árbol de archivos del workspace."""
 
@@ -47,6 +52,7 @@ class FilesPanel(QWidget):
     file_selected = Signal(str)    # clic simple
     root_changed = Signal(str)
     run_requested = Signal(str)    # ejecutar archivo (path completo)
+    save_run_config = Signal(str)  # guardar archivo como run config
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -151,9 +157,16 @@ class FilesPanel(QWidget):
                 it.setData(0, Qt.UserRole + 1, "file")
                 it.setToolTip(0, e.path)
                 parent_item.addChild(it)
-                # Botón play verde para archivos ejecutables
+                # Botones para archivos ejecutables: play + play_bookmark
                 ext = os.path.splitext(e.name)[1].lower()
                 if ext in RUNNABLE_EXTS:
+                    # Contenedor para los dos botones
+                    from PySide6.QtWidgets import QWidget, QHBoxLayout
+                    btns = QWidget()
+                    lo = QHBoxLayout(btns)
+                    lo.setContentsMargins(0, 0, 0, 0)
+                    lo.setSpacing(2)
+                    # Play
                     btn = QPushButton()
                     btn.setIcon(play_icon())
                     btn.setIconSize(QSize(12, 12))
@@ -164,7 +177,20 @@ class FilesPanel(QWidget):
                     btn.setToolTip(f"Ejecutar {e.name}")
                     btn.clicked.connect(
                         lambda _, p=e.path: self.run_requested.emit(p))
-                    self.tree.setItemWidget(it, 1, btn)
+                    lo.addWidget(btn)
+                    # Play + Bookmark (guardar como run config)
+                    btn_bm = QPushButton()
+                    btn_bm.setIcon(play_bookmark_icon())
+                    btn_bm.setIconSize(QSize(14, 14))
+                    btn_bm.setFixedSize(16, 16)
+                    btn_bm.setStyleSheet(
+                        "QPushButton { background:transparent; border:none; }"
+                        "QPushButton:hover { background:#2f6fdb33; border-radius:2px; }")
+                    btn_bm.setToolTip(f"Guardar y ejecutar {e.name} como configuración")
+                    btn_bm.clicked.connect(
+                        lambda _, p=e.path: self.save_run_config.emit(p))
+                    lo.addWidget(btn_bm)
+                    self.tree.setItemWidget(it, 1, btns)
 
     def _on_double(self, item, _col):
         path = item.data(0, Qt.UserRole)

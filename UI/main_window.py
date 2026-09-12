@@ -550,8 +550,8 @@ class TopBar(QFrame):
         h.addStretch(1)
 
         # ---- Run configurations (derecha, estilo IntelliJ) ----
-        self.run_configs = ["run"]  # nombres de configuraciones guardadas
-        self._run_current = "run"
+        self.run_configs = []  # lista de {name, path}
+        self._run_current = None
         self.btn_run_cfg = QPushButton("▶ run ⌄")
         self.btn_run_cfg.setObjectName("tbRunCfg")
         self.btn_run_cfg.setCursor(Qt.PointingHandCursor)
@@ -576,14 +576,33 @@ class TopBar(QFrame):
         h.addWidget(self.btn_stop_run)
 
     # ---- run configurations ----
+    def load_run_configs(self):
+        """Carga las run configs del proyecto desde .run_configs.json."""
+        from utils.run_configs import load_configs
+        self.run_configs = load_configs(self.repo_path) if self.repo_path else []
+        if self.run_configs:
+            self._run_current = self.run_configs[0]["name"]
+        else:
+            self._run_current = None
+        self._update_run_btn()
+
+    def _update_run_btn(self):
+        if self._run_current:
+            self.btn_run_cfg.setText(f"▶ {self._run_current} ⌄")
+        else:
+            self.btn_run_cfg.setText("▶ run ⌄")
+
     def _show_run_menu(self):
         menu = QMenu(self)
         menu.setObjectName("runMenu")
-        for name in self.run_configs:
-            act = QAction(("▶  " if name == self._run_current else "    ") + name, menu)
+        for c in self.run_configs:
+            name = c["name"]
+            label = ("▶  " if name == self._run_current else "    ") + name
+            act = QAction(label, menu)
             act.triggered.connect(lambda _, n=name: self._select_run_cfg(n))
             menu.addAction(act)
-        menu.addSeparator()
+        if self.run_configs:
+            menu.addSeparator()
         a_cur = QAction("Current File", menu)
         a_cur.triggered.connect(lambda: self._select_run_cfg("(current file)"))
         menu.addAction(a_cur)
@@ -596,7 +615,7 @@ class TopBar(QFrame):
 
     def _select_run_cfg(self, name):
         self._run_current = name
-        self.btn_run_cfg.setText(f"▶ {name} ⌄")
+        self._update_run_btn()
 
     def set_run_running(self, running):
         """Activa/desactiva el botón de stop."""
@@ -611,6 +630,7 @@ class TopBar(QFrame):
         self._refresh_git()
         if path:
             add_recent(path)
+        self.load_run_configs()
 
     def _show_folder_menu(self):
         from utils.recents import load_recents
@@ -869,6 +889,9 @@ class MainBody(QWidget):
         # Conectar play de ambos paneles → terminal
         self.files_panel.run_requested.connect(self._run_file)
         self.files_panel_right.run_requested.connect(self._run_file)
+        # Conectar save_run_config de ambos paneles
+        self.files_panel.save_run_config.connect(self._save_run_config)
+        self.files_panel_right.save_run_config.connect(self._save_run_config)
 
     def _run_file(self, path):
         """Ejecuta un archivo .py/.js/.java en la terminal flotante."""
@@ -909,6 +932,33 @@ class MainBody(QWidget):
 
     def _on_proc_finished(self, code, _status):
         self.terminal.out.appendPlainText(f"— proceso terminado (código {code}) —")
+        # Avisar al top_bar para desactivar el botón stop
+        p = self.parent()
+        while p and not hasattr(p, "top_bar"):
+            p = p.parent()
+        if p and hasattr(p, "top_bar"):
+            p.top_bar.set_run_running(False)
+
+    def _save_run_config(self, path):
+        """Guarda el archivo como run config del proyecto y lo ejecuta."""
+        # El project dir se obtiene del top bar via la ventana principal
+        project = ""
+        p = self.parent()
+        while p and not hasattr(p, "top_bar"):
+            p = p.parent()
+        if p and hasattr(p, "top_bar"):
+            project = p.top_bar.repo_path
+        if not project:
+            return
+        from utils.run_configs import add_config
+        name = os.path.splitext(os.path.basename(path))[0]
+        add_config(project, name, path)
+        # Recargar el menú del top bar
+        if p and hasattr(p, "top_bar"):
+            p.top_bar.load_run_configs()
+            p.top_bar._select_run_cfg(name)
+        # Ejecutar el archivo
+        self._run_file(path)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1119,8 +1169,21 @@ class UIMainWindow(QMainWindow):
 
     # ---- run configurations ----
     def _on_run_requested(self, name):
-        self.statusBar().showMessage(f"▶ Ejecutando: {name}", 3000)
-        self.top_bar.set_run_running(True)
+        if name == "(current file)":
+            # Ejecutar el archivo de la tab actual del editor
+            tab = self.body.center.tabs.currentWidget()
+            if tab and hasattr(tab, "path"):
+                self.body._run_file(tab.path)
+                self.top_bar.set_run_running(True)
+            return
+        # Buscar el path de la config seleccionada
+        from utils.run_configs import get_config
+        path = get_config(self.top_bar.repo_path, name)
+        if path:
+            self.body._run_file(path)
+            self.top_bar.set_run_running(True)
+        else:
+            self.statusBar().showMessage(f"⚠ Config '{name}' no encontrada", 3000)
 
     def _on_stop_requested(self):
         self.body._stop_proc()

@@ -356,8 +356,8 @@ class CodeEditor(QPlainTextEdit):
 
     def _update_line_width(self):
         digits = len(str(max(1, self.blockCount())))
-        # Ancho: dígitos + padding chico
-        w = 8 + digits * self.fontMetrics().horizontalAdvance("9")
+        # 8px padding izquierda + dígitos + 8px padding derecha
+        w = 16 + digits * self.fontMetrics().horizontalAdvance("9")
         self.line_numbers.setFixedWidth(w)
         self.setViewportMargins(w, 0, 0, 0)
 
@@ -390,7 +390,7 @@ class CodeEditor(QPlainTextEdit):
                 num = str(block_num + 1)
                 painter.setPen(QColor("#5c6370"))
                 painter.drawText(
-                    0, top, self.line_numbers.width() - 4,
+                    8, top, self.line_numbers.width() - 16,
                     self.fontMetrics().height(),
                     Qt.AlignRight, num)
             block = block.next()

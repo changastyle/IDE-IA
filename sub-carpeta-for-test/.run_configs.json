@@ -1,0 +1,12 @@
+{
+  "configs": [
+    {
+      "name": "snake",
+      "path": "/Users/nico/Desktop/cli-ia/sub-carpeta-for-test/snake.js"
+    },
+    {
+      "name": "test",
+      "path": "/Users/nico/Desktop/cli-ia/sub-carpeta-for-test/test.js"
+    }
+  ]
+}
