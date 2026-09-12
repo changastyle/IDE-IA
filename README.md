@@ -2,6 +2,8 @@
 
 Un IDE local con IA construido en Python y Qt que se conecta a proveedores de IA locales (LM Studio, OpenCode Go) y permite a la IA operar directamente sobre los archivos del workspace.
 
+![Nueva UI](README/NEW-UI.png)
+
 ![IDE-IA](README/README.png)
 
 ## Características
