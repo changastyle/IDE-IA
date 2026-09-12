@@ -1,0 +1,2 @@
+Carpeta: /private/var/folders/jj/x2_mf0ss3gvgsrsxm74btx500000gn/T/tmp8ya3ca07
+Modelo: glm-5.3-flash · OpenCode Go
