@@ -241,15 +241,124 @@ class CodeEditor(QPlainTextEdit):
         self.updateRequest.connect(self._update_line_area)
         self._update_line_width()
         self.highlighter = None
+        self._lang = "text"
 
     def set_language(self, lang):
         if self.highlighter:
             self.highlighter.deleteLater()
         self.highlighter = SyntaxHighlighter(self.document(), lang)
+        self._lang = lang
+
+    def duplicate_line(self):
+        """Duplica la línea actual o la selección hacia abajo."""
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            # Duplicar la selección
+            start = cursor.selectionStart()
+            end = cursor.selectionEnd()
+            # selectedText() usa \u2029 para saltos de línea
+            text = cursor.selectedText().replace("\u2029", "\n")
+            # Insertar el texto duplicado después de la selección
+            cursor.setPosition(end)
+            # Si la selección no termina en salto de línea, agregar uno
+            if not text.endswith("\n"):
+                text = "\n" + text
+            cursor.insertText(text)
+            # Seleccionar el texto duplicado
+            new_end = end + len(text)
+            cursor.setPosition(end)
+            cursor.setPosition(new_end, QTextCursor.KeepAnchor)
+            self.setTextCursor(cursor)
+        else:
+            # Duplicar la línea actual
+            cursor.beginEditBlock()
+            block = cursor.block()
+            line_text = block.text()
+            # Insertar la línea duplicada abajo
+            cursor.movePosition(QTextCursor.EndOfLine)
+            cursor.insertText("\n" + line_text)
+            cursor.endEditBlock()
+            self.setTextCursor(cursor)
+
+    def toggle_comment(self):
+        """Comenta/descomenta las líneas seleccionadas (o la línea actual)."""
+        cursor = self.textCursor()
+        # Determinar el rango de líneas a procesar
+        if cursor.hasSelection():
+            start_pos = cursor.selectionStart()
+            end_pos = cursor.selectionEnd()
+        else:
+            start_pos = cursor.position()
+            end_pos = cursor.position()
+        # Obtener el bloque inicial y final
+        doc = self.document()
+        start_block = doc.findBlock(start_pos)
+        end_block = doc.findBlock(end_pos)
+        # Detectar el prefijo de comentario según el lenguaje
+        comment = self._comment_prefix()
+        if not comment:
+            return
+        # Verificar si todas las líneas ya están comentadas
+        all_commented = True
+        block = start_block
+        while block.isValid() and block != end_block.next():
+            text = block.text()
+            stripped = text.lstrip()
+            if stripped and not stripped.startswith(comment):
+                all_commented = False
+                break
+            block = block.next()
+        # Comentar o descomentar
+        cursor.beginEditBlock()
+        block = start_block
+        while block.isValid() and block != end_block.next():
+            text = block.text()
+            if all_commented:
+                # Descomentar: quitar el prefijo y el espacio siguiente
+                if text.lstrip().startswith(comment):
+                    idx = text.find(comment)
+                    after = idx + len(comment)
+                    # Quitar un espacio después del comment si existe
+                    if after < len(text) and text[after] == " ":
+                        after += 1
+                    new_text = text[:idx] + text[after:]
+                    cursor.setPosition(block.position())
+                    cursor.movePosition(QTextCursor.EndOfBlock,
+                                        QTextCursor.KeepAnchor)
+                    cursor.removeSelectedText()
+                    cursor.insertText(new_text)
+            else:
+                # Comentar: agregar el prefijo
+                # Preservar indentación
+                stripped = text.lstrip()
+                indent = text[:len(text) - len(stripped)]
+                new_text = indent + comment + " " + stripped if stripped else indent + comment
+                cursor.setPosition(block.position())
+                cursor.movePosition(QTextCursor.EndOfBlock,
+                                    QTextCursor.KeepAnchor)
+                cursor.removeSelectedText()
+                cursor.insertText(new_text)
+            block = block.next()
+        cursor.endEditBlock()
+
+    def _comment_prefix(self):
+        """Devuelve el prefijo de comentario según el lenguaje."""
+        lang = getattr(self, "_lang", "text")
+        if lang in ("python"):
+            return "#"
+        elif lang in ("javascript", "java", "css"):
+            return "//"
+        elif lang == "html":
+            return "<!--"
+        elif lang == "markdown":
+            return "<!--"
+        return None
 
     def _update_line_width(self):
         digits = len(str(max(1, self.blockCount())))
-        w = 12 + digits * self.fontMetrics().horizontalAdvance("9")
+        # Ancho: dígitos + padding chico
+        w = 8 + digits * self.fontMetrics().horizontalAdvance("9")
+        self.line_numbers.setFixedWidth(w)
         self.setViewportMargins(w, 0, 0, 0)
 
     def _update_line_area(self, rect, dy):
@@ -281,7 +390,7 @@ class CodeEditor(QPlainTextEdit):
                 num = str(block_num + 1)
                 painter.setPen(QColor("#5c6370"))
                 painter.drawText(
-                    0, top, self.line_numbers.width() - 6,
+                    0, top, self.line_numbers.width() - 4,
                     self.fontMetrics().height(),
                     Qt.AlignRight, num)
             block = block.next()
@@ -296,7 +405,7 @@ class LineNumberArea(QWidget):
     def __init__(self, editor):
         super().__init__(editor)
         self.editor = editor
-        self.setFixedWidth(40)
+        self.setFixedWidth(24)  # se actualiza en _update_line_width
 
     def paintEvent(self, event):
         self.editor.line_number_paint(event)
@@ -386,16 +495,18 @@ class EditorPanel(QWidget):
             sc.deleteLater()
         self._shortcut_objs = []
         sc_defs = {
-            "save":        self._save_current,
-            "close_tab":   self._close_current,
-            "next_tab":    self._next_tab,
-            "prev_tab":    self._prev_tab,
+            "save":           self._save_current,
+            "close_tab":      self._close_current,
+            "next_tab":       self._next_tab,
+            "prev_tab":       self._prev_tab,
+            "duplicate_line": self._duplicate_line,
+            "toggle_comment": self._toggle_comment,
         }
         for key, cb in sc_defs.items():
             seq = self._shortcuts.get(key)
             if seq:
                 sc = QShortcut(QKeySequence(seq), self)
-                sc.setContext(Qt.WidgetWithChildrenShortcut)
+                sc.setContext(Qt.ApplicationShortcut)
                 sc.activated.connect(cb)
                 self._shortcut_objs.append(sc)
 
@@ -414,6 +525,16 @@ class EditorPanel(QWidget):
     def _close_current(self):
         if self.tabs.count() > 0:
             self._close_tab(self.tabs.currentIndex())
+
+    def _duplicate_line(self):
+        tab = self.tabs.currentWidget()
+        if tab and hasattr(tab, "editor"):
+            tab.editor.duplicate_line()
+
+    def _toggle_comment(self):
+        tab = self.tabs.currentWidget()
+        if tab and hasattr(tab, "editor"):
+            tab.editor.toggle_comment()
 
     def reload_shortcuts(self):
         """Recarga los shortcuts desde el archivo (tras cambiar en settings)."""

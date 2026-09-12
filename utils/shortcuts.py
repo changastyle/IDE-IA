@@ -15,6 +15,8 @@ DEFAULT_SHORTCUTS = {
     "close_tab":      ("Cerrar pestaña actual",          "Ctrl+W"),
     "next_tab":       ("Pestaña siguiente",              "Ctrl+Shift+Right"),
     "prev_tab":       ("Pestaña anterior",               "Ctrl+Shift+Left"),
+    "duplicate_line": ("Duplicar línea/selección abajo", "Ctrl+D"),
+    "toggle_comment": ("Comentar/descomentar (Ctrl+7)",  "Ctrl+7"),
     "run_file":       ("Ejecutar archivo (play)",        "Ctrl+R"),
     "toggle_terminal":("Mostrar/ocultar terminal",      "Ctrl+`"),
     "refresh_files":  ("Refrescar árbol de archivos",    "F5"),

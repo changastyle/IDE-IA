@@ -118,7 +118,6 @@ QTreeWidget#filesTree::item:selected { background:#2f6fdb; }
 QTreeWidget#filesTree::item:hover { background:#2a2d33; }
 QFrame#centerEditor { background:#1a1c21; border:1px solid #2b2e34; border-radius:8px; }
 QTabWidget::pane { border:none; background:transparent; }
-QTabBar { qproperty-alignment: AlignLeft; qproperty-expanding: false; }
 QTabBar::tab {
     background:#22242a; border:none; border-bottom:2px solid transparent;
     padding:6px 10px 6px 14px; color:#9aa0aa; font-size:13px;

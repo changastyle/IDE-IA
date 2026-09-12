@@ -4,12 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="08ecc4ff-22ce-45a9-8ce5-e7286ee93b69" name="Changes" comment="First commit - checkpoint to restyle UI">
-      <change beforePath="$PROJECT_DIR$/../Voice/rec.wav" beforeDir="false" afterPath="$PROJECT_DIR$/../Voice/rec.wav" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../chat_ia.py" beforeDir="false" afterPath="$PROJECT_DIR$/../chat_ia.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../conversaciones/conv_20260912_091533.json" beforeDir="false" afterPath="$PROJECT_DIR$/../conversaciones/conv_20260912_091533.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../last-conversation.txt" beforeDir="false" afterPath="$PROJECT_DIR$/../last-conversation.txt" afterDir="false" />
-    </list>
+    <list default="true" id="08ecc4ff-22ce-45a9-8ce5-e7286ee93b69" name="Changes" comment="First commit - checkpoint to restyle UI" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -47,7 +42,7 @@
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "git-widget-placeholder": "main",
+    "git-widget-placeholder": "dev",
     "javascript.preferred.runtime.type.id": "node",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
@@ -84,7 +79,7 @@
       <option name="presentableId" value="Default" />
       <updated>1789192012229</updated>
       <workItem from="1789192015115" duration="4675000" />
-      <workItem from="1789204240214" duration="1660000" />
+      <workItem from="1789204240214" duration="3138000" />
     </task>
     <task id="LOCAL-00001" summary="First commit - checkpoint to restyle UI">
       <option name="closed" value="true" />

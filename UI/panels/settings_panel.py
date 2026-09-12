@@ -55,7 +55,8 @@ class ShortcutsTab(QWidget):
             self.table.setItem(i, 0, item_desc)
             # Secuencia editable (KeySequenceEdit como cellWidget)
             edit = QKeySequenceEdit(QKeySequence(self._shortcuts.get(key, default)))
-            edit.keySequenceChanged.connect(lambda e, k=key: self._on_change(k, e))
+            edit.keySequenceChanged.connect(
+                lambda seq, k=key: self._on_change(k, seq))
             self.table.setCellWidget(i, 1, edit)
             # Default
             item_def = QTableWidgetItem(default)
@@ -63,19 +64,31 @@ class ShortcutsTab(QWidget):
             item_def.setForeground(Qt.gray)
             self.table.setItem(i, 2, item_def)
 
-    def _on_change(self, key, edit):
-        seq = edit.keySequence().toString()
-        if seq:
-            self._shortcuts[key] = seq
+    def _on_change(self, key, seq):
+        """seq es un QKeySequence emitido por keySequenceChanged."""
+        s = seq.toString() if hasattr(seq, "toString") else str(seq)
+        if s:
+            self._shortcuts[key] = s
         else:
             # Vacío = restaurar default
             self._shortcuts[key] = DEFAULT_SHORTCUTS[key][1]
 
     def _reset(self):
         self._shortcuts = reset_shortcuts()
+        # Limpiar la tabla y reconstruir
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(DEFAULT_SHORTCUTS))
         self._fill_table()
 
     def save(self):
+        # Antes de guardar, leer los valores actuales de los widgets
+        # por si algún cambio no disparó el signal
+        for i, (key, (desc, default)) in enumerate(DEFAULT_SHORTCUTS.items()):
+            edit = self.table.cellWidget(i, 1)
+            if edit:
+                s = edit.keySequence().toString()
+                if s:
+                    self._shortcuts[key] = s
         save_shortcuts(self._shortcuts)
 
 
