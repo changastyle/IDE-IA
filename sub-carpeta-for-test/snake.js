@@ -27,11 +27,33 @@ const BASE_STEP_MS = 110;
 
 let snake, food, goldFood, dir, nextDir, score, best, level, running, paused, lastStep, rafId, particles;
 
+// Muros del nivel personalizado (desde el editor de niveles)
+let walls = [];
+let customLevelName = null;
+(function loadCustomLevel() {
+    const sel = localStorage.getItem('snake_selected_level');
+    if (!sel || sel === 'classic') return;
+    const raw = localStorage.getItem('snake_custom_level_' + sel);
+    if (!raw) return;
+    try {
+        walls = JSON.parse(raw).map(function (c) { return { x: c[0], y: c[1] }; });
+        customLevelName = sel;
+    } catch (e) { walls = []; }
+})();
+
+function isWall(x, y) {
+    return walls.some(function (w) { return w.x === x && w.y === y; });
+}
+
 best = parseInt(localStorage.getItem('snake_best') || '0', 10) || 0;
 
 function init() {
     canvas.width = tileCount * gridSize;
     canvas.height = tileCount * gridSize;
+    // si hay muros sobre la posición inicial de la serpiente, los quitamos
+    walls = walls.filter(function (w) {
+        return !(w.y === 10 && w.x >= 8 && w.x <= 12);
+    });
     snake = [{ x: 10, y: 10 }];
     dir = { x: 1, y: 0 };
     nextDir = { x: 1, y: 0 };
@@ -71,6 +93,10 @@ function tick() {
     const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
 
     if (head.x < 0 || head.x >= tileCount || head.y < 0 || head.y >= tileCount) {
+        gameOver();
+        return;
+    }
+    if (isWall(head.x, head.y)) {
         gameOver();
         return;
     }
@@ -130,6 +156,14 @@ function draw() {
         ctx.stroke();
     }
 
+    // muros del nivel personalizado
+    if (walls.length) {
+        ctx.fillStyle = '#8a8aa8';
+        for (const w of walls) {
+            ctx.fillRect(w.x * gridSize + 1, w.y * gridSize + 1, gridSize - 2, gridSize - 2);
+        }
+    }
+
     if (food) {
         ctx.fillStyle = '#ff4444';
         roundRect(food.x * gridSize + 2, food.y * gridSize + 2, gridSize - 4, gridSize - 4, 4);
@@ -179,7 +213,7 @@ function placeFood() {
     do {
         food = { x: Math.floor(Math.random() * tileCount), y: Math.floor(Math.random() * tileCount) };
         attempts++;
-    } while (snake.some(s => s.x === food.x && s.y === food.y) && attempts < 100);
+    } while ((snake.some(s => s.x === food.x && s.y === food.y) || isWall(food.x, food.y)) && attempts < 200);
 }
 
 function placeGoldFood() {
@@ -188,7 +222,8 @@ function placeGoldFood() {
         goldFood = { x: Math.floor(Math.random() * tileCount), y: Math.floor(Math.random() * tileCount) };
         attempts++;
     } while ((snake.some(s => s.x === goldFood.x && s.y === goldFood.y) ||
-             (food && goldFood.x === food.x && goldFood.y === food.y)) && attempts < 100);
+             (food && goldFood.x === food.x && goldFood.y === food.y) ||
+             isWall(goldFood.x, goldFood.y)) && attempts < 200);
 }
 
 function spawnParticles(gx, gy, color) {
@@ -240,7 +275,7 @@ function gameOver() {
 
 function updateHud() {
     if (scoreEl) scoreEl.textContent = 'Puntuación: ' + score;
-    if (levelEl) levelEl.textContent = 'Nivel: ' + level;
+    if (levelEl) levelEl.textContent = customLevelName ? 'Nivel ' + customLevelName : 'Nivel: ' + level;
     if (bestEl) bestEl.textContent = 'Récord: ' + best;
 }
 

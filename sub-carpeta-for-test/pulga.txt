@@ -1,0 +1,10 @@
+Lista de preguntas:
+
+1. ¿Cómo se guarda el récord del juego?
+2. ¿Se puede jugar en el móvil?
+3. ¿Cómo creo un nivel personalizado?
+4. ¿Por qué el audio no suena hasta que interactúo?
+5. ¿Qué pasa si la serpiente choca con un muro?
+6. ¿Se puede cambiar la velocidad del juego?
+7. ¿Cómo funciona la comida dorada?
+8. ¿Los niveles se comparten entre navegadores?

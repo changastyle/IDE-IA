@@ -19,10 +19,12 @@ Estructura:
 """
 
 import os
+import re
 import sys
 import shlex
+import subprocess
 
-from PySide6.QtCore import Qt, QMimeData, QPoint, Signal, QProcess, QSize
+from PySide6.QtCore import Qt, QMimeData, QPoint, Signal, QProcess, QSize, QTimer
 from PySide6.QtGui import QDrag, QColor, QPainter, QFont, QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
@@ -41,6 +43,40 @@ TOPBAR_H = 50
 HOTBAR_W = 50
 TERMINAL_H = 300
 COLLAPSED_W = 30
+
+
+def _process_tree_rss_mb():
+    """RSS total (MB) del proceso y todos sus descendientes.
+
+    Suma IDE + terminales/procesos lanzados (node, npm, python, etc).
+    Usa `ps` — sin dependencias externas.
+    """
+    try:
+        out = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,rss="],
+            capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return 0.0
+    children, rss = {}, {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            pid, ppid, r = int(parts[0]), int(parts[1]), int(parts[2])
+        except ValueError:
+            continue
+        rss[pid] = r
+        children.setdefault(ppid, []).append(pid)
+    total, stack, seen = 0.0, [os.getpid()], set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen or pid not in rss:
+            continue
+        seen.add(pid)
+        total += rss[pid]
+        stack.extend(children.get(pid, []))
+    return total / 1024.0  # KB → MB
 
 STYLE = """
 QMainWindow, QWidget { background:#16181c; color:#d7dae0; font-size:13px; }
@@ -134,9 +170,11 @@ QTabBar::close-button:disabled { image:none; }
 QLabel#editorStatus {
     background:#1e2126; color:#5c6370; font-size:11px;
     border-top:1px solid #2b2e34; }
-QTextEdit#chatView {
+QTextEdit#chatView, QScrollArea#chatView {
     background:#1a1c21; border:1px solid #2b2e34; border-radius:8px;
-    padding:8px; font-size:13px; }
+    padding:4px; font-size:13px; }
+QScrollArea#chatView > QWidget > QWidget {
+    background:transparent; }
 QPlainTextEdit {
     background:#22242a; border:1px solid #33363c; border-radius:8px;
     padding:6px; color:#e8eaed; font-size:13px; }
@@ -794,6 +832,23 @@ class BottomBar(QFrame):
         h.setContentsMargins(12, 2, 12, 2)
         h.addWidget(QLabel("Bottom bar (30px)"))
         h.addStretch(1)
+        # RAM del IDE + procesos hijos (terminales, servers corriendo)
+        self.lbl_ram = QLabel()
+        self.lbl_ram.setStyleSheet("color:#8e8e93; font-size:11px;")
+        self.lbl_ram.setToolTip(
+            "RAM total: IDE + terminales y procesos abiertos")
+        h.addWidget(self.lbl_ram)
+        self._ram_timer = QTimer(self)
+        self._ram_timer.timeout.connect(self._update_ram)
+        self._ram_timer.start(3000)
+        self._update_ram()
+
+    def _update_ram(self):
+        mb = _process_tree_rss_mb()
+        if mb >= 1024:
+            self.lbl_ram.setText(f"🐏 {mb/1024:.1f} GB")
+        else:
+            self.lbl_ram.setText(f"🐏 {mb:.0f} MB")
 
 
 class SideZone(QSplitter):
@@ -935,12 +990,77 @@ class MainBody(QWidget):
         # Conectar files_changed del chat → refrescar árboles
         self.chat_panel.files_changed.connect(self.files_panel.refresh)
         self.chat_panel.files_changed.connect(self.files_panel_right.refresh)
+        self.chat_panel_right.files_changed.connect(self.files_panel.refresh)
+        self.chat_panel_right.files_changed.connect(
+            self.files_panel_right.refresh)
+        # Clic en un archivo tocado → abrir en el editor
+        self.chat_panel.open_file_requested.connect(self._open_from_chat)
+        self.chat_panel_right.open_file_requested.connect(
+            self._open_from_chat)
+        # Auto-abrir archivos que la IA toca → editor + scroll a la línea
+        self.chat_panel.file_auto_open.connect(self._auto_open_from_chat)
+        self.chat_panel_right.file_auto_open.connect(
+            self._auto_open_from_chat)
+        # Review inline de cambios de la IA (diff verde/rojo en el editor)
+        self.chat_panel.file_review.connect(self._review_from_chat)
+        self.chat_panel_right.file_review.connect(self._review_from_chat)
+        # Card ✓/✗ → salir del modo review en el editor
+        self.chat_panel.file_resolved.connect(self._end_review)
+        self.chat_panel_right.file_resolved.connect(self._end_review)
+        # Review bar del editor → marcar la card correspondiente
+        self.center.review_accepted.connect(
+            lambda p: self._resolve_from_editor(p, True))
+        self.center.review_rejected.connect(
+            lambda p: self._resolve_from_editor(p, False))
+
+    def _open_from_chat(self, rel_path):
+        """Abre en el editor un archivo tocado por la IA (path relativo)."""
+        panel = self.sender()
+        root = getattr(getattr(panel, "tools", None), "root", None)
+        full = os.path.join(root, rel_path) if root else rel_path
+        if os.path.exists(full):
+            self.center.open_file(os.path.realpath(full))
+
+    def _auto_open_from_chat(self, rel_path, line):
+        """Auto-abre el archivo que la IA acaba de tocar y scrollea a `line`."""
+        panel = self.sender()
+        root = getattr(getattr(panel, "tools", None), "root", None)
+        full = os.path.join(root, rel_path) if root else rel_path
+        if os.path.exists(full):
+            self.center.open_file(os.path.realpath(full),
+                                  goto_line=int(line or 1))
+
+    def _review_from_chat(self, rel_path, before):
+        """Abre el archivo tocado por la IA en modo review (diff inline)."""
+        panel = self.sender()
+        root = getattr(getattr(panel, "tools", None), "root", None)
+        full = os.path.join(root, rel_path) if root else rel_path
+        if os.path.exists(full):
+            self.center.start_review(os.path.realpath(full), before)
+
+    def _resolve_from_editor(self, full_path, accepted):
+        """La review bar del editor resolvió un archivo → marca la card."""
+        for panel in (self.chat_panel, self.chat_panel_right):
+            root = getattr(getattr(panel, "tools", None), "root", None)
+            if not root:
+                continue
+            rel = os.path.relpath(full_path, os.path.realpath(root))
+            if panel.resolve_from_editor(rel, accepted):
+                return
+
+    def _end_review(self, rel_path, _accepted):
+        """La card del chat resolvió el archivo → salir de review en editor."""
+        panel = self.sender()
+        root = getattr(getattr(panel, "tools", None), "root", None)
+        full = os.path.join(root, rel_path) if root else rel_path
+        full = os.path.realpath(full)
+        if os.path.exists(full):
+            self.center.end_review(full)
+        else:
+            self.center.close_path(full)
 
     def _run_file(self, path):
         """Ejecuta un archivo .py/.js/.java en la terminal flotante."""
-        if self.proc is not None and self.proc.state() != QProcess.NotRunning:
-            self.terminal.out.appendPlainText("⚠ Ya hay un proceso corriendo.")
-            return
         ext = os.path.splitext(path)[1].lower()
         if ext == ".py":
             runner = "python3"
@@ -952,20 +1072,52 @@ class MainBody(QWidget):
             return
         fname = os.path.basename(path)
         file_dir = os.path.dirname(path)
-        cmd = f"cd {shlex.quote(file_dir)} && {runner} {shlex.quote(fname)}"
+        cmd = f"{runner} {shlex.quote(fname)}"
+        self._run_command(cmd, file_dir, header=f"cd {file_dir} && {cmd}")
+
+    def _run_command(self, cmd, cwd, open_browser=False, header=None,
+                     browser=""):
+        """Ejecuta un comando en la terminal flotante.
+
+        Si open_browser y la salida muestra una URL http://localhost:…,
+        abre el navegador automáticamente (una sola vez por ejecución).
+        """
+        if self.proc is not None and self.proc.state() != QProcess.NotRunning:
+            self.terminal.out.appendPlainText("⚠ Ya hay un proceso corriendo.")
+            return
         self.terminal.out.clear()
-        self.terminal.out.appendPlainText(f"$ cd {file_dir} && {runner} {fname}")
+        self.terminal.out.appendPlainText(f"$ {header or cmd}")
         self.toggle_terminal(True)
+        self._open_browser = open_browser
+        self._browser_name = browser or ""
+        self._browser_opened = False
         self.proc = QProcess()
-        self.proc.setWorkingDirectory(file_dir)
-        self.proc.readyReadStandardOutput.connect(
-            lambda: self.terminal.out.appendPlainText(
-                str(self.proc.readAllStandardOutput(), "utf-8", "replace").rstrip()))
+        self.proc.setWorkingDirectory(cwd)
+        self.proc.readyReadStandardOutput.connect(self._on_proc_output)
         self.proc.readyReadStandardError.connect(
             lambda: self.terminal.out.appendPlainText(
                 str(self.proc.readAllStandardError(), "utf-8", "replace").rstrip()))
         self.proc.finished.connect(self._on_proc_finished)
         self.proc.start("/bin/zsh", ["-c", cmd])
+
+    def _on_proc_output(self):
+        text = str(self.proc.readAllStandardOutput(), "utf-8", "replace").rstrip()
+        self.terminal.out.appendPlainText(text)
+        # Auto-abrir navegador si la salida muestra una URL local
+        if getattr(self, "_open_browser", False) and not getattr(
+                self, "_browser_opened", True):
+            m = re.search(r"https?://(localhost|127\.0\.0\.1):\d+\S*", text)
+            if m:
+                self._browser_opened = True
+                url = m.group(0)
+                name = getattr(self, "_browser_name", "")
+                if name and "default" not in name.lower():
+                    subprocess.Popen(["open", "-a", name, url])
+                else:
+                    from PySide6.QtGui import QDesktopServices
+                    from PySide6.QtCore import QUrl
+                    QDesktopServices.openUrl(QUrl(url))
+                self.terminal.out.appendPlainText(f"🌐 Navegador abierto: {name or 'sistema'}")
 
     def _stop_proc(self):
         if self.proc is not None and self.proc.state() != QProcess.NotRunning:
@@ -1115,7 +1267,7 @@ class UIMainWindow(QMainWindow):
         self.top_bar.git_action.connect(self._on_git_action)
         self.top_bar.run_requested.connect(self._on_run_requested)
         self.top_bar.stop_requested.connect(self._on_stop_requested)
-        self.top_bar.edit_configs_requested.connect(self._open_settings)
+        self.top_bar.edit_configs_requested.connect(self._open_run_configs)
         self.top_bar.open_new_window.connect(self._open_new_window)
         # Panel de archivos sigue a la carpeta de la top bar
         self.body.files_panel.file_activated.connect(self._on_file_activated)
@@ -1228,14 +1380,33 @@ class UIMainWindow(QMainWindow):
                 self.body._run_file(tab.path)
                 self.top_bar.set_run_running(True)
             return
-        # Buscar el path de la config seleccionada
-        from utils.run_configs import get_config
-        path = get_config(self.top_bar.repo_path, name)
-        if path:
-            self.body._run_file(path)
-            self.top_bar.set_run_running(True)
-        else:
+        # Buscar la config seleccionada (dict con type/path/script/command)
+        from utils.run_configs import get_config, build_command
+        cfg = get_config(self.top_bar.repo_path, name)
+        if not cfg:
             self.statusBar().showMessage(f"⚠ Config '{name}' no encontrada", 3000)
+            return
+        project = self.top_bar.repo_path
+        cmd = build_command(cfg, project)
+        if not cmd:
+            self.statusBar().showMessage(
+                f"⚠ Config '{name}' sin comando (revisá el formulario)", 3000)
+            return
+        self.body._run_command(
+            cmd, project, open_browser=bool(cfg.get("open_browser")),
+            browser=cfg.get("browser", ""))
+        self.top_bar.set_run_running(True)
+
+    def _open_run_configs(self):
+        """Abre el diálogo Run/Debug Configurations estilo JetBrains."""
+        from UI.panels.run_configs_dialog import RunConfigsDialog
+        project = self.top_bar.repo_path or os.getcwd()
+        dlg = RunConfigsDialog(project, self.top_bar._run_current or "", self)
+        if dlg.exec():
+            self.top_bar.load_run_configs()
+            if dlg.result_run and dlg.result_config:
+                self.top_bar._select_run_cfg(dlg.result_config["name"])
+                self._on_run_requested(dlg.result_config["name"])
 
     def _on_stop_requested(self):
         self.body._stop_proc()

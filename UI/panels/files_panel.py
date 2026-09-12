@@ -25,7 +25,8 @@ EXT_ICONS = {
 
 RUNNABLE_EXTS = {".py", ".js", ".java"}
 
-IGNORED_DIRS = {".git", "__pycache__", ".idea", "node_modules", ".venv", "venv"}
+IGNORED_DIRS = {".git", "__pycache__", ".idea", "node_modules", ".venv", "venv",
+                "ns-code"}
 
 
 def file_icon(name, is_dir):
@@ -316,13 +317,13 @@ class FilesPanel(QWidget):
                     if diff > 0:
                         badge.setText(f"+{diff}")
                         badge.setStyleSheet(
-                            "background:#22c55e33; color:#22c55e; "
+                            "background:rgba(34,197,94,0.15); color:#22c55e; "
                             "border-radius:4px; padding:1px 5px; "
                             "font-size:10px; font-weight:bold;")
                     else:
                         badge.setText(f"{diff}")
                         badge.setStyleSheet(
-                            "background:#ef444433; color:#ef4444; "
+                            "background:rgba(239,68,68,0.15); color:#ef4444; "
                             "border-radius:4px; padding:1px 5px; "
                             "font-size:10px; font-weight:bold;")
                     self.tree.setItemWidget(it, 2, badge)

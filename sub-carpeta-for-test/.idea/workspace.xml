@@ -4,7 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="08ecc4ff-22ce-45a9-8ce5-e7286ee93b69" name="Changes" comment="First commit - checkpoint to restyle UI" />
+    <list default="true" id="08ecc4ff-22ce-45a9-8ce5-e7286ee93b69" name="Changes" comment="First commit - checkpoint to restyle UI">
+      <change beforePath="$PROJECT_DIR$/../UI/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/../UI/main_window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../UI/panels/chat_panel.py" beforeDir="false" afterPath="$PROJECT_DIR$/../UI/panels/chat_panel.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../UI/panels/files_panel.py" beforeDir="false" afterPath="$PROJECT_DIR$/../UI/panels/files_panel.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Voice/rec.mp3" beforeDir="false" afterPath="$PROJECT_DIR$/../Voice/rec.mp3" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -79,7 +84,7 @@
       <option name="presentableId" value="Default" />
       <updated>1789192012229</updated>
       <workItem from="1789192015115" duration="4675000" />
-      <workItem from="1789204240214" duration="5670000" />
+      <workItem from="1789204240214" duration="15305000" />
     </task>
     <task id="LOCAL-00001" summary="First commit - checkpoint to restyle UI">
       <option name="closed" value="true" />

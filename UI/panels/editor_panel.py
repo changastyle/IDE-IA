@@ -7,17 +7,26 @@
 - Detección de cambios externos al ganar foco
 """
 import os
+import difflib
 
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import (
     QFont, QColor, QSyntaxHighlighter, QTextCharFormat, QTextCursor,
-    QKeySequence, QShortcut,
+    QKeySequence, QShortcut, QTextBlockUserData, QTextFormat,
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPlainTextEdit,
-    QLabel, QPushButton, QFileDialog, QMessageBox, QScrollArea,
+    QTextEdit, QLabel, QPushButton, QFileDialog, QMessageBox, QScrollArea,
     QTabBar, QStyle, QStyleOptionTab,
 )
+
+
+class _DiffData(QTextBlockUserData):
+    """Marca de diff por bloque: 'add' (verde) o 'del' (rojo phantom)."""
+
+    def __init__(self):
+        super().__init__()
+        self.flag = None
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ICONS_DIR = os.path.join(APP_DIR, "iconos")
@@ -381,22 +390,42 @@ class CodeEditor(QPlainTextEdit):
             self.line_numbers)
         painter.fillRect(event.rect(), QColor("#22242a"))
         block = self.firstVisibleBlock()
-        block_num = block.blockNumber()
         top = round(self.blockBoundingGeometry(block).translated(
             self.contentOffset()).top())
         bottom = top + round(self.blockBoundingRect(block).height())
+        real_ln = 0
+        # Contar líneas reales (no phantom) hasta el primer bloque visible
+        b0 = self.document().begin()
+        while b0.isValid() and b0.blockNumber() < block.blockNumber():
+            d = b0.userData()
+            if not (d and getattr(d, "flag", None) == "del"):
+                real_ln += 1
+            b0 = b0.next()
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible():
-                num = str(block_num + 1)
-                painter.setPen(QColor("#5c6370"))
-                painter.drawText(
-                    8, top, self.line_numbers.width() - 16,
-                    self.fontMetrics().height(),
-                    Qt.AlignRight, num)
+                d = block.userData()
+                flag = getattr(d, "flag", None) if d else None
+                h = self.fontMetrics().height()
+                if flag == "del":
+                    painter.fillRect(0, top, 3, h, QColor("#e05561"))
+                    painter.setPen(QColor("#e05561"))
+                    painter.drawText(8, top, self.line_numbers.width() - 16,
+                                     h, Qt.AlignRight, "–")
+                elif flag == "add":
+                    real_ln += 1
+                    painter.fillRect(0, top, 3, h, QColor("#4cc26b"))
+                    painter.setPen(QColor("#4cc26b"))
+                    painter.drawText(8, top, self.line_numbers.width() - 16,
+                                     h, Qt.AlignRight, str(real_ln))
+                else:
+                    real_ln += 1
+                    painter.setPen(QColor("#5c6370"))
+                    painter.drawText(
+                        8, top, self.line_numbers.width() - 16,
+                        h, Qt.AlignRight, str(real_ln))
             block = block.next()
             top = bottom
             bottom = top + round(self.blockBoundingRect(block).height())
-            block_num += 1
 
 
 class LineNumberArea(QWidget):
@@ -414,15 +443,108 @@ class LineNumberArea(QWidget):
 class EditorTab(QWidget):
     """Una pestaña del editor: contiene el CodeEditor + datos del archivo."""
 
+    review_accepted = Signal(str)   # path — usuario aceptó todos los cambios
+    review_rejected = Signal(str)   # path — usuario rechazó (restaurar antes)
+    prev_file = Signal(str)         # path — ir al archivo anterior en review
+    next_file = Signal(str)         # path — ir al siguiente archivo en review
+
     def __init__(self, path, parent=None):
         super().__init__(parent)
         self.path = path
         self.original_content = ""
+        self._merged = None          # [(flag|None, text)] durante review
+        self._review_before = None
+        self._hunk_idx = 0
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
         self.editor = CodeEditor()
         v.addWidget(self.editor)
+        # ---- Barra inferior de revisión (estilo Windsurf) ----
+        self.review_bar = QWidget()
+        self.review_bar.setObjectName("reviewBar")
+        rb = QHBoxLayout(self.review_bar)
+        rb.setContentsMargins(10, 4, 10, 4)
+        rb.setSpacing(6)
+        rb.addStretch(1)
+        _nav_ss = (
+            "QPushButton{background:#2a2d33;border:1px solid #3f4246;"
+            "border-radius:4px;color:#dfe1e5;padding:3px 9px;font-size:12px;}"
+            "QPushButton:hover{background:#353b45;}")
+        b = QPushButton("↑")
+        b.setToolTip("Cambio anterior")
+        b.setStyleSheet(_nav_ss)
+        b.setFixedHeight(26)
+        b.clicked.connect(lambda: self._goto_hunk(-1))
+        rb.addWidget(b)
+        self.hunk_lbl = QLabel("")
+        self.hunk_lbl.setStyleSheet("color:#e8eaed;font-size:12px;")
+        rb.addWidget(self.hunk_lbl)
+        b = QPushButton("↓")
+        b.setToolTip("Siguiente cambio")
+        b.setStyleSheet(_nav_ss)
+        b.setFixedHeight(26)
+        b.clicked.connect(lambda: self._goto_hunk(1))
+        rb.addWidget(b)
+        # Aceptar / rechazar solo el hunk actual
+        b = QPushButton("✓")
+        b.setToolTip("Aceptar este cambio")
+        b.setStyleSheet(
+            "QPushButton{background:#2a2d33;border:1px solid #3f4246;"
+            "border-radius:4px;color:#4cc26b;padding:3px 9px;font-size:12px;"
+            "font-weight:bold;} QPushButton:hover{background:#353b45;}")
+        b.setFixedHeight(26)
+        b.clicked.connect(self._accept_hunk)
+        rb.addWidget(b)
+        b = QPushButton("✗")
+        b.setToolTip("Rechazar este cambio")
+        b.setStyleSheet(
+            "QPushButton{background:#2a2d33;border:1px solid #3f4246;"
+            "border-radius:4px;color:#e05561;padding:3px 9px;font-size:12px;"
+            "font-weight:bold;} QPushButton:hover{background:#353b45;}")
+        b.setFixedHeight(26)
+        b.clicked.connect(self._reject_hunk)
+        rb.addWidget(b)
+        rb.addSpacing(10)
+        self.btn_acc_all = QPushButton("Accept File")
+        self.btn_acc_all.setStyleSheet(
+            "QPushButton{background:#3574f0;border:none;border-radius:6px;"
+            "color:#fff;padding:4px 14px;font-size:12px;font-weight:600;}"
+            "QPushButton:hover{background:#4a86f5;}")
+        self.btn_acc_all.setFixedHeight(26)
+        self.btn_acc_all.clicked.connect(self._accept_all)
+        rb.addWidget(self.btn_acc_all)
+        self.btn_rej_all = QPushButton("Reject File")
+        self.btn_rej_all.setStyleSheet(
+            "QPushButton{background:#2a2d33;border:1px solid #3f4246;"
+            "border-radius:6px;color:#dfe1e5;padding:4px 14px;font-size:12px;}"
+            "QPushButton:hover{background:#353b45;}")
+        self.btn_rej_all.setFixedHeight(26)
+        self.btn_rej_all.clicked.connect(self._reject_all)
+        rb.addWidget(self.btn_rej_all)
+        rb.addSpacing(10)
+        # Navegación entre archivos en review: < 1 of 3 files >
+        b = QPushButton("‹")
+        b.setToolTip("Archivo anterior con cambios")
+        b.setStyleSheet(_nav_ss)
+        b.setFixedHeight(26)
+        b.clicked.connect(lambda: self.prev_file.emit(self.path))
+        rb.addWidget(b)
+        self.files_lbl = QLabel("")
+        self.files_lbl.setStyleSheet("color:#9da3ae;font-size:12px;")
+        rb.addWidget(self.files_lbl)
+        b = QPushButton("›")
+        b.setToolTip("Siguiente archivo con cambios")
+        b.setStyleSheet(_nav_ss)
+        b.setFixedHeight(26)
+        b.clicked.connect(lambda: self.next_file.emit(self.path))
+        rb.addWidget(b)
+        rb.addStretch(1)
+        # Aceptar/rechazar el hunk actual: botones chicos discretos
+        self.review_bar.setStyleSheet(
+            "#reviewBar{background:#1d1f24;border-top:1px solid #32363d;}")
+        self.review_bar.hide()
+        v.addWidget(self.review_bar)
         self.load()
 
     def load(self):
@@ -432,22 +554,242 @@ class EditorTab(QWidget):
         except OSError as e:
             content = f"// Error al leer {self.path}: {e}"
         self.original_content = content
+        self._merged = None
+        self._review_before = None
+        self.review_bar.hide()
+        self.editor.setExtraSelections([])
         self.editor.setPlainText(content)
         ext = os.path.splitext(self.path)[1].lower()
         lang = EXT_LANG.get(ext, "text")
         self.editor.set_language(lang)
 
+    def _sync_merged_from_doc(self):
+        """Relee flags+texto del documento (por si el usuario editó en review)."""
+        merged = []
+        block = self.editor.document().begin()
+        while block.isValid():
+            d = block.userData()
+            merged.append((getattr(d, "flag", None) if d else None,
+                           block.text()))
+            block = block.next()
+        self._merged = merged
+
+    def real_text(self):
+        """Texto real del archivo = documento sin las phantom lines 'del'."""
+        if self._merged is not None:
+            self._sync_merged_from_doc()
+            return "\n".join(t for f, t in self._merged if f != "del")
+        return self.editor.toPlainText()
+
     def is_modified(self):
-        return self.editor.toPlainText() != self.original_content
+        return self.real_text() != self.original_content
 
     def save(self):
         try:
+            text = self.real_text()
             with open(self.path, "w", encoding="utf-8") as f:
-                f.write(self.editor.toPlainText())
-            self.original_content = self.editor.toPlainText()
+                f.write(text)
+            self.original_content = text
+            if self._merged is not None:
+                # Lo guardado pasa a ser la nueva base; seguir revisando el resto
+                self._review_before = text
+                self._render_review()
             return True
         except OSError:
             return False
+
+    # ---- Review de cambios de la IA (diff inline) ----
+
+    def in_review(self):
+        return self._merged is not None
+
+    def start_review(self, before):
+        """Muestra el diff `before` vs contenido actual dentro del editor.
+
+        Las líneas borradas aparecen como phantom lines rojas (no forman parte
+        del texto real); las agregadas en verde. Navegación por hunks.
+        """
+        if not self.in_review():
+            self._review_before = before
+        # Si ya hay review activo, el "actual" es el texto real (sin phantom)
+        after = self.real_text()
+        self._merged = self._merge_lines(self._review_before, after)
+        self._hunk_idx = 0
+        self._render_review()
+        self.review_bar.show()
+        if self._hunks():
+            self._scroll_to_hunk(0)
+
+    @staticmethod
+    def _merge_lines(before, after):
+        """Combina before/after en [(flag, text)] con flag 'del'/'add'/None."""
+        merged = []
+        a, b = before.split("\n"), after.split("\n")
+        sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                merged += [(None, t) for t in b[j1:j2]]
+            elif tag == "delete":
+                merged += [("del", t) for t in a[i1:i2]]
+            elif tag == "insert":
+                merged += [("add", t) for t in b[j1:j2]]
+            else:  # replace → del primero, luego add (orden diff estándar)
+                merged += [("del", t) for t in a[i1:i2]]
+                merged += [("add", t) for t in b[j1:j2]]
+        return merged
+
+    def _render_review(self):
+        """Vuelca _merged al documento, marcando bloques add/del."""
+        ed = self.editor
+        cur_pos = ed.textCursor().position()
+        ed.blockSignals(True)
+        ed.setPlainText("\n".join(t for _f, t in self._merged))
+        block = ed.document().begin()
+        for flag, _t in self._merged:
+            if flag:
+                d = _DiffData()
+                d.flag = flag
+                block.setUserData(d)
+            block = block.next()
+        ed.blockSignals(False)
+        self._apply_diff_formats()
+        # Restaurar cursor aproximado
+        cur = ed.textCursor()
+        cur.setPosition(min(cur_pos, len(ed.toPlainText())))
+        ed.setTextCursor(cur)
+        self._update_hunk_label()
+
+    def _apply_diff_formats(self):
+        """Colorea fondo verde/rojo en las líneas marcadas."""
+        sels = []
+        block = self.editor.document().begin()
+        while block.isValid():
+            d = block.userData()
+            flag = getattr(d, "flag", None) if d else None
+            if flag:
+                sel = QTextEdit.ExtraSelection()
+                fmt = QTextCharFormat()
+                if flag == "add":
+                    fmt.setBackground(QColor(46, 160, 67, 55))
+                else:
+                    fmt.setBackground(QColor(229, 72, 77, 45))
+                    fmt.setFontStrikeOut(True)
+                    fmt.setForeground(QColor("#f08080"))
+                fmt.setProperty(QTextFormat.FullWidthSelection, True)
+                sel.format = fmt
+                sel.cursor = QTextCursor(block)
+                sels.append(sel)
+            block = block.next()
+        self.editor.setExtraSelections(sels)
+
+    def _hunks(self):
+        """Rangos (start,end) en _merged de bloques contiguos marcados."""
+        hunks, start = [], None
+        for i, (flag, _t) in enumerate(self._merged or []):
+            if flag and start is None:
+                start = i
+            elif not flag and start is not None:
+                hunks.append((start, i - 1))
+                start = None
+        if start is not None:
+            hunks.append((start, len(self._merged) - 1))
+        return hunks
+
+    def _update_hunk_label(self):
+        hunks = self._hunks()
+        n_edits = sum(1 for f, _t in (self._merged or []) if f)
+        self.hunk_lbl.setText(
+            f"{n_edits} edits" if hunks else "sin cambios")
+        self.hunk_lbl.setToolTip(
+            f"Cambio {min(self._hunk_idx + 1, len(hunks))} de {len(hunks)}"
+            if hunks else "")
+
+    def set_file_nav(self, idx, total):
+        """Actualiza el contador '< i of N files >' de la barra."""
+        self.files_lbl.setText(f"{idx} of {total} files" if total else "")
+
+    def _scroll_to_hunk(self, idx):
+        hunks = self._hunks()
+        if not hunks:
+            return
+        self._hunk_idx = idx % len(hunks)
+        line = hunks[self._hunk_idx][0] + 1  # 1-based en el doc merged
+        EditorPanel.goto_line(self, line)
+        self._update_hunk_label()
+
+    def _goto_hunk(self, delta):
+        if self._hunks():
+            self._scroll_to_hunk(self._hunk_idx + delta)
+
+    def _apply_hunk(self, accept):
+        """Acepta (quita phantom del, desmarca add) o rechaza (quita add,
+        desmarca del) el hunk actual."""
+        if self._merged is not None:
+            self._sync_merged_from_doc()
+        hunks = self._hunks()
+        if not hunks:
+            return
+        s, e = hunks[min(self._hunk_idx, len(hunks) - 1)]
+        new_merged = []
+        for i, (flag, t) in enumerate(self._merged):
+            if s <= i <= e:
+                if flag == "del" and accept:
+                    continue          # borrar la phantom → queda borrada
+                if flag == "add" and not accept:
+                    continue          # borrar la agregada → se revierte
+                new_merged.append((None, t))
+            else:
+                new_merged.append((flag, t))
+        self._merged = new_merged
+        if not self._hunks():
+            # Resolvió todo hunk a hunk: guardar y marcar como aceptado
+            self._finish_review()
+            self.save()
+            self.review_accepted.emit(self.path)
+        else:
+            self._hunk_idx = min(self._hunk_idx, len(self._hunks()) - 1)
+            self._render_review()
+            self._scroll_to_hunk(self._hunk_idx)
+
+    def _accept_hunk(self):
+        self._apply_hunk(accept=True)
+
+    def _reject_hunk(self):
+        self._apply_hunk(accept=False)
+
+    def _accept_all(self):
+        self._merged = [(None, t) for f, t in self._merged if f != "del"]
+        self._finish_review()
+        self.save()
+        self.review_accepted.emit(self.path)
+
+    def _reject_all(self):
+        # No escribe acá: el chat restaura el backup (o borra el archivo nuevo)
+        # de forma síncrona al emitir la señal; después recargamos desde disco.
+        self.review_rejected.emit(self.path)
+        if os.path.exists(self.path):
+            self.end_review()
+
+    def end_review(self):
+        """Sale del modo review recargando desde disco."""
+        self._merged = None
+        self._review_before = None
+        self.review_bar.hide()
+        self.editor.setExtraSelections([])
+        self.load()
+
+    def _finish_review(self):
+        """Render final: documento = texto real, sin marcas ni barra."""
+        final = self.real_text()
+        self._merged = None
+        self._review_before = None
+        self.editor.blockSignals(True)
+        self.editor.setPlainText(final)
+        self.editor.blockSignals(False)
+        self.editor.setExtraSelections([])
+        self.review_bar.hide()
+        self.editor.viewport().update()
+        self.editor.line_numbers.update()
 
 
 class EditorPanel(QWidget):
@@ -455,6 +797,8 @@ class EditorPanel(QWidget):
 
     file_opened = Signal(str)
     file_saved = Signal(str)
+    review_accepted = Signal(str)   # path — todos los cambios aceptados
+    review_rejected = Signal(str)   # path — cambios rechazados (restaurar)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -476,6 +820,7 @@ class EditorPanel(QWidget):
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._on_tab_changed)
         v.addWidget(self.tabs, 1)
+        self._review_files = []  # paths con review activo (para ‹ 1 of N ›)
 
         # ---- Barra de estado del editor ----
         self.status = QLabel("Sin archivo")
@@ -542,18 +887,111 @@ class EditorPanel(QWidget):
         self._shortcuts = load_shortcuts()
         self._apply_shortcuts()
 
-    def open_file(self, path):
-        """Abre un archivo en una nueva pestaña, o activa la existente."""
+    def open_file(self, path, goto_line=0):
+        """Abre un archivo en una nueva pestaña (o activa la existente) y
+        opcionalmente scrollea a una línea (1-based)."""
         if path in self._open_paths:
             self.tabs.setCurrentIndex(self._open_paths[path])
+            tab = self.tabs.currentWidget()
+            # Recargar desde disco si el usuario no tiene cambios sin guardar
+            # (p. ej. la IA acaba de editar el archivo por fuera del editor)
+            if tab and not tab.is_modified():
+                tab.load()
+            self._update_status(path)
+        else:
+            tab = EditorTab(path)
+            tab.review_accepted.connect(self._on_tab_review_accepted)
+            tab.review_rejected.connect(self._on_tab_review_rejected)
+            tab.prev_file.connect(lambda p: self._review_nav(p, -1))
+            tab.next_file.connect(lambda p: self._review_nav(p, 1))
+            name = os.path.basename(path)
+            idx = self.tabs.addTab(tab, name)
+            self._open_paths[path] = idx
+            self.tabs.setCurrentIndex(idx)
+            self.file_opened.emit(path)
+            self._update_status(path)
+        if goto_line and tab:
+            self.goto_line(tab, goto_line)
+        return tab
+
+    def start_review(self, path, before):
+        """Abre `path` y entra en modo review con diff vs `before`."""
+        tab = self.open_file(path)
+        if tab:
+            tab.start_review(before)
+            if path not in self._review_files:
+                self._review_files.append(path)
+            self._update_review_nav()
+
+    def end_review(self, path):
+        """Sale del modo review en la tab de `path` (si está)."""
+        if path in self._review_files:
+            self._review_files.remove(path)
+            self._update_review_nav()
+        idx = self._open_paths.get(path)
+        if idx is None:
             return
-        tab = EditorTab(path)
-        name = os.path.basename(path)
-        idx = self.tabs.addTab(tab, name)
-        self._open_paths[path] = idx
-        self.tabs.setCurrentIndex(idx)
-        self.file_opened.emit(path)
-        self._update_status(path)
+        tab = self.tabs.widget(idx)
+        if tab and tab.in_review():
+            tab.end_review()
+
+    def _on_tab_review_accepted(self, path):
+        self._drop_review_file(path)
+        self.review_accepted.emit(path)
+
+    def _on_tab_review_rejected(self, path):
+        self._drop_review_file(path)
+        self.review_rejected.emit(path)
+
+    def _drop_review_file(self, path):
+        if path in self._review_files:
+            self._review_files.remove(path)
+            self._update_review_nav()
+
+    def _update_review_nav(self):
+        """Actualiza el '< i of N files >' de cada tab en review."""
+        total = len(self._review_files)
+        for i, p in enumerate(self._review_files):
+            idx = self._open_paths.get(p)
+            tab = self.tabs.widget(idx) if idx is not None else None
+            if tab:
+                tab.set_file_nav(i + 1, total)
+
+    def _review_nav(self, path, delta):
+        """Cambia a la tab del siguiente/anterior archivo en review."""
+        if path in self._review_files and len(self._review_files) > 1:
+            i = self._review_files.index(path)
+            nxt = self._review_files[(i + delta) % len(self._review_files)]
+            idx = self._open_paths.get(nxt)
+            if idx is not None:
+                self.tabs.setCurrentIndex(idx)
+
+    def close_path(self, path):
+        """Cierra la tab de `path` sin preguntar (p. ej. archivo borrado)."""
+        idx = self._open_paths.get(path)
+        if idx is None:
+            return
+        tab = self.tabs.widget(idx)
+        del self._open_paths[tab.path]
+        self.tabs.removeTab(idx)
+        self._reindex()
+        if path in self._review_files:
+            self._review_files.remove(path)
+            self._update_review_nav()
+        if self.tabs.count() == 0:
+            self.status.setText("Sin archivo")
+
+    @staticmethod
+    def goto_line(tab, line):
+        """Posiciona el cursor del editor en `line` (1-based) y centra."""
+        doc = tab.editor.document()
+        block = doc.findBlockByLineNumber(max(0, line - 1))
+        if not block.isValid():
+            return
+        cur = tab.editor.textCursor()
+        cur.setPosition(block.position())
+        tab.editor.setTextCursor(cur)
+        tab.editor.centerCursor()
 
     def _close_tab(self, idx):
         tab = self.tabs.widget(idx)

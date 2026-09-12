@@ -24,6 +24,9 @@ const server = http.createServer((req, res) => {
   // Normalizar la ruta solicitada
   let urlPath = decodeURIComponent(req.url.split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
+  // El editor de niveles vive en html/editor-de-mapas.html
+  if (urlPath === '/editor-de-mapas.html') urlPath = '/html/editor-de-mapas.html';
+  if (urlPath === '/editor.html') urlPath = '/html/editor-de-mapas.html';
 
   const filePath = path.join(ROOT, path.normalize(urlPath));
 

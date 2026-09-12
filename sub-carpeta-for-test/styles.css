@@ -99,9 +99,125 @@ body {
     font-size: 13px;
     color: #aaa;
     opacity: 0.8;
+    text-align: center;
 }
+
+#hint #editorLink {
+    color: #6ec6ff;
+    text-decoration: none;
+    font-weight: 600;
+}
+#hint #editorLink:hover { text-decoration: underline; }
 
 @media (max-width: 480px) {
     #hud { font-size: 14px; padding: 10px 12px; }
     #overlay h1 { font-size: 28px; }
 }
+
+/* ===== Editor de niveles ===== */
+
+#editor-title { color: #7CFF6B; }
+
+#editorLink {
+    color: #6ec6ff;
+    text-decoration: none;
+    font-weight: 600;
+}
+#editorLink:hover { text-decoration: underline; }
+
+#editor-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    margin-top: 8px;
+    padding: 0 12px;
+}
+
+#editorCanvas {
+    width: 400px;
+    max-width: 95vw;
+    aspect-ratio: 1 / 1;
+    border: 2px solid #4a4a6a;
+    border-radius: 8px;
+    background-color: #0f0f1a;
+    cursor: crosshair;
+    touch-action: none;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+}
+
+#editor-hint {
+    margin: 0;
+    font-size: 13px;
+    color: #aaa;
+}
+
+#editor-tools {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+#editor-tools label { font-size: 14px; color: #ddd; }
+
+#levelName {
+    width: 64px;
+    padding: 8px;
+    font-size: 15px;
+    border-radius: 6px;
+    border: 1px solid #4a4a6a;
+    background: #16213e;
+    color: #fff;
+    text-align: center;
+}
+
+.editor-btn {
+    padding: 9px 16px;
+    font-size: 14px;
+    font-weight: 700;
+    background-color: #7CFF6B;
+    color: #0f0f1a;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, transform 0.05s ease;
+}
+.editor-btn:hover  { background-color: #b6ffa6; }
+.editor-btn:active { transform: scale(0.97); }
+
+.editor-btn.classic {
+    background-color: #ffd166;
+}
+.editor-btn.classic:hover { background-color: #ffe3a3; }
+
+#level-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    max-width: 420px;
+}
+
+.level-chip-wrap { display: inline-flex; }
+
+.level-chip {
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    background: #16213e;
+    color: #6ec6ff;
+    border: 1px solid #4a4a6a;
+    border-radius: 6px 0 0 6px;
+    cursor: pointer;
+}
+.level-chip:hover { background: #1f2f55; }
+
+.level-chip.delete {
+    border-radius: 0 6px 6px 0;
+    border-left: none;
+    color: #ff5e5e;
+    padding: 7px 9px;
+}
+.level-chip.delete:hover { background: #3a1a2e; }

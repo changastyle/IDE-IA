@@ -1,0 +1,38 @@
+[21:39:29] sub-carpeta-for-test-prompt-1
+Prompt: dime de que va este proyecto
+Respuesta: Es un juego clásico de **Snake (la serpiente)** hecho con HTML5 Canvas y JavaScript vanilla, sin librerías externas.
+
+**Lo que incluye:**
+
+- 🎮 **Juego principal** (`index.html` / `snake.html` + `snake.js`): tablero de 20×20, la serpiente se mueve con las flechas del teclado o swipe táctil, come comida para crecer y suma puntos. Tiene récord guardado en `localStorage`, overlay de Game Over con botón de reinicio, y niveles de velocidad.
+- 🔊 **Efectos de sonido** (`audio/sound.js`): generados con Web Audio API (sin archivos de audio externos) — suena al comer, al comer comida dorada, al subir de nivel y en el Game Over.
+- 🗺️ **Editor de niveles** (`html/editor-de-mapas.html` + `js/editor.js`): una herramienta para dibujar tus propios muros en la cuadrícula (clic para pintar, clic derecho para borrar). Los niveles se guardan en el navegador y luego puedes jugarlos desde el juego principal, donde chocar con un muro te elimina.
+- 🎨 **Estilos** (`styles.css`): interfaz con HUD de puntuación/récord/nivel, diseño responsive para móvil.
+
+En resumen: un Snake completo con sonido, récords persistentes y la posibilidad de crear y jugar niveles personalizados con muros.
+
+[22:54:05] sub-carpeta-for-test-prompt-2
+Prompt: cuentame que cambios le harias a este proyecto en un archivo changes.md
+Respuesta: Listo ✅ Creé **`changes.md`** con las propuestas de mejora organizadas en 5 categorías: correcciones/limpieza, gameplay, visual/UX, audio y arquitectura — 20 ideas en total con una tabla de prioridad sugerida al final.
+Archivos: changes.md (+50)
+
+[23:07:30] sub-carpeta-for-test-prompt-3
+Prompt: que mas cambios le harias?
+Respuesta: Añadí una **segunda tanda con 15 ideas más** (21–35) a `changes.md`: multijugador local, power-ups, tabla de récords, logros, mejoras del editor (deshacer, rectángulos, vista previa), PWA offline, replay, estadísticas, accesibilidad y hasta CI/CD con despliegue a GitHub Pages. 🚀
+Archivos: changes.md (+18)
+
+[23:13:38] sub-carpeta-for-test-prompt-4
+Prompt: que otros cambios agregarias
+Respuesta: Agregué una **tercera tanda con 15 ideas más** (36–50) a `changes.md`: modos de juego alternativos (wrap-around, zen, semillas compartibles), IA demo tipo arcade, mecánicas nuevas para niveles (teletransportes, muros con timer), backup de niveles/récords, i18n, gamepad, optimización de render y más. Ya son **50 ideas en total** 🎯
+Archivos: changes.md (+18)
+
+[23:17:06] sub-carpeta-for-test-prompt-5
+Prompt: desarrollemos la idea 1 en un archivo idea1.md
+Respuesta: Listo ✅ Creé **`idea1.md`** con el plan completo para unificar `index.html` y `snake.html`: comparación del estado actual, pasos concretos (página canónica, redirección de `snake.html`, actualización de referencias), verificación y riesgos. Si querés, en la próxima sesión puedo ejecutar el plan directamente.
+Archivos: idea1.md (+74)
+
+[23:32:10] sub-carpeta-for-test-prompt-6
+Prompt: desarollemos la idea 2 en una carpeta ideas y crea el archivo idea2.txt
+Respuesta: Listo ✅ Creé **`ideas/idea2.txt`** con el plan para limpiar la carpeta `_trash/`: verificación de referencias, borrado (con backup vía Git o ZIP), revisión de otros restos (`test.js`, `pulga.txt`) y verificación final. Cuando quieras, ejecuto la limpieza directamente.
+Archivos: ideas/idea2.txt (+65)
+
