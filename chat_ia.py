@@ -16,7 +16,7 @@ import requests
 from PySide6.QtGui import QColor, QIcon, QTextCursor
 from PySide6.QtCore import QSize, Qt, QProcess, QSettings, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
+    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPlainTextEdit, QPushButton, QSpinBox, QTextEdit, QTabWidget, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -123,6 +123,22 @@ QTextEdit#chatView {
   border-radius: 10px;
   padding: 6px;
 }
+
+QFrame#promptNav {
+  background-color: rgba(24, 26, 30, 235);
+  border: 1px solid #3a3e46;
+  border-radius: 12px;
+}
+QLabel#promptNavTitle { color: #d7dae0; font-weight: bold; background: transparent; }
+QPushButton#promptNavBtn {
+  background: #2a2d33; border: none; border-radius: 6px; color: #c8ccd4; }
+QPushButton#promptNavBtn:hover { background: #2f6fed; color: #fff; }
+QListWidget#promptNavList {
+  background: transparent; border: none; font-size: 12px; }
+QListWidget#promptNavList::item {
+  padding: 6px; border-radius: 6px; margin: 1px 0; }
+QListWidget#promptNavList::item:selected { background: #2f6fed; }
+QListWidget#promptNavList::item:hover { background: #2a2d33; }
 
 QTabWidget::pane {
   border: 1px solid #2b2e34;
@@ -1027,16 +1043,44 @@ class PrefsDialog(QDialog):
         self.combo_primary = QComboBox()
         self.combo_secondary = QComboBox()
         self.combo_vision = QComboBox()
-        for c in (self.combo_primary, self.combo_secondary, self.combo_vision):
+        self.combo_polish = QComboBox()
+        for c in (self.combo_primary, self.combo_secondary, self.combo_vision,
+                  self.combo_polish):
             c.addItem("(usar el del combo)", "")
             for m in all_models:
                 c.addItem(m)
         self._set_combo(self.combo_primary, prefs.get("primary_model", ""))
         self._set_combo(self.combo_secondary, prefs.get("secondary_model", ""))
         self._set_combo(self.combo_vision, prefs.get("vision_model", ""))
+        self._set_combo(self.combo_polish, prefs.get("polish_model", ""))
         form.addRow("Modelo primario:", self.combo_primary)
         form.addRow("Modelo secundario:", self.combo_secondary)
         form.addRow("Modelo para imágenes:", self.combo_vision)
+        self.combo_polish.setToolTip(
+            "Modelo liviano (ideal local, ej: LM Studio) que usa el botón ✨ "
+            "para pulir el texto antes de enviarlo al modelo principal.")
+        form.addRow("Modelo para magia (✨ pulir):", self.combo_polish)
+        # Transcripción de voz: local o IA
+        self.chk_voice_ia = QCheckBox("Usar modelo de IA para transcribir voz")
+        self.chk_voice_ia.setChecked(bool(prefs.get("voice_ia", False)))
+        self.chk_voice_ia.setToolTip(
+            "Si está marcado, usa un modelo de IA (ej: whisper en LM Studio) "
+            "via /v1/audio/transcriptions. Si no, usa Python local (Google Speech).")
+        form.addRow("", self.chk_voice_ia)
+        self.combo_voice = QComboBox()
+        self.combo_voice.addItem("(usar el del combo)", "")
+        audio_models = filter_audio_models(all_models)
+        if not audio_models:
+            self.combo_voice.addItem("(ningún modelo de audio encontrado)")
+            self.combo_voice.setItemData(1, "", Qt.UserRole)
+        else:
+            for m in audio_models:
+                self.combo_voice.addItem(m)
+        self._set_combo(self.combo_voice, prefs.get("voice_model", ""))
+        self.combo_voice.setToolTip(
+            "Solo aparecen modelos que soportan audio (whisper, qwen2-audio, etc.). "
+            "Descargá uno en LM Studio y refrescá los modelos.")
+        form.addRow("Modelo para voz:", self.combo_voice)
         # Max tokens de conversación (auto-resumir)
         self.spin_max_tokens = QSpinBox()
         self.spin_max_tokens.setRange(1000, 1000000)
@@ -1075,6 +1119,9 @@ class PrefsDialog(QDialog):
             "primary_model": self.combo_primary.currentText(),
             "secondary_model": self.combo_secondary.currentText(),
             "vision_model": self.combo_vision.currentText(),
+            "polish_model": self.combo_polish.currentText(),
+            "voice_ia": self.chk_voice_ia.isChecked(),
+            "voice_model": self.combo_voice.currentText(),
             "max_context_tokens": self.spin_max_tokens.value(),
             "auto_summarize": self.chk_auto_summarize.isChecked(),
             "token_budget": self.spin_budget.value(),
@@ -1095,6 +1142,25 @@ def fetch_models(base, key=""):
     r.raise_for_status()
     r.encoding = "utf-8"
     return [m["id"] for m in r.json().get("data", []) if "embed" not in m["id"].lower()]
+
+
+AUDIO_KEYWORDS = ("whisper", "audio", "qwen2-audio", "voxtral", "belle-whisper")
+
+
+def is_audio_model(model_id):
+    """Heurística: ¿este modelo soporta transcripción de audio?"""
+    mid = model_id.lower()
+    return any(k in mid for k in AUDIO_KEYWORDS)
+
+
+def filter_audio_models(all_models):
+    """Filtra la lista de 'provider::model' dejando solo los de audio."""
+    out = []
+    for ref in all_models:
+        _, _, model = ref.partition("::")
+        if is_audio_model(model):
+            out.append(ref)
+    return out
 
 
 CLOUD_PRESETS = [
@@ -1130,6 +1196,28 @@ class ProviderDialog(QDialog):
         form.addRow("Nombre:", self.local_name)
         form.addRow("Base URL:", self.local_base)
         form.addRow("API key (opcional):", self.local_key)
+        # Test connection: bolita verde/roja + botón
+        test_row = QHBoxLayout()
+        self.test_dot = QLabel("⚪")
+        self.test_dot.setFixedWidth(18)
+        self.test_dot.setAlignment(Qt.AlignCenter)
+        self.test_lbl = QLabel("Sin probar")
+        self.test_lbl.setStyleSheet("color:#888;")
+        self.test_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._last_error = ""
+        self.b_copy_err = QPushButton("📋")
+        self.b_copy_err.setFixedSize(24, 24)
+        self.b_copy_err.setToolTip("Copiar error al portapapeles")
+        self.b_copy_err.clicked.connect(self._copy_error)
+        self.b_copy_err.setVisible(False)
+        b_test = QPushButton("Test Connection")
+        b_test.setToolTip("Prueba la conexión a /v1/models")
+        b_test.clicked.connect(self._test_connection)
+        test_row.addWidget(self.test_dot)
+        test_row.addWidget(self.test_lbl, 1)
+        test_row.addWidget(self.b_copy_err)
+        test_row.addWidget(b_test)
+        form.addRow("", test_row)
         self.tabs.addTab(local_w, "Local")
 
         cloud_w = QWidget()
@@ -1160,10 +1248,54 @@ class ProviderDialog(QDialog):
         row.addWidget(b_ok)
         v.addLayout(row)
 
+    def _test_connection(self):
+        base = self.local_base.text().strip().rstrip("/")
+        if not base:
+            self._set_test_result("⚪", "Escribí una Base URL", "#888")
+            return
+        if "://" not in base:
+            base = "http://" + base
+        self._set_test_result("🟡", "Probando…", "#eab308")
+        QApplication.processEvents()
+        try:
+            ids = fetch_models(base, self.local_key.text().strip())
+            n = len(ids)
+            self._last_error = ""
+            self.b_copy_err.setVisible(False)
+            self._set_test_result(
+                "🟢", f"Conectado — {n} modelo(s) encontrados", "#22c55e")
+        except Exception as e:
+            full = f"{type(e).__name__}: {e}"
+            self._last_error = f"URL probada: {base}/v1/models\n{full}"
+            msg = str(e)
+            if "No route to host" in msg:
+                msg = "Host inalcanzable (¿IP correcta? ¿misma red?)"
+            elif "Connection refused" in msg:
+                msg = "Conexión rechazada (¿puerto correcto? ¿server encendido?)"
+            elif "timed out" in msg:
+                msg = "Timeout (¿firewall?)"
+            elif "404" in msg:
+                msg = "404 Not Found — ¿falta el puerto? (ej: :1234)"
+            self._set_test_result("🔴", msg, "#ef4444")
+            self.b_copy_err.setVisible(True)
+
+    def _copy_error(self):
+        if self._last_error:
+            QApplication.clipboard().setText(self._last_error)
+            self.b_copy_err.setText("✓")
+            QTimer.singleShot(1200, lambda: self.b_copy_err.setText("📋"))
+
+    def _set_test_result(self, dot, text, color):
+        self.test_dot.setText(dot)
+        self.test_lbl.setText(text)
+        self.test_lbl.setStyleSheet(f"color:{color};")
+
     def values(self):
         if self.tabs.currentIndex() == 0:
-            return (self.local_name.text().strip(),
-                    self.local_base.text().strip().rstrip("/"),
+            base = self.local_base.text().strip().rstrip("/")
+            if base and "://" not in base:
+                base = "http://" + base
+            return (self.local_name.text().strip(), base,
                     self.local_key.text().strip())
         row = self.cloud_list.currentRow()
         if row < 0:
@@ -1221,8 +1353,11 @@ class ModelPickerDialog(QDialog):
 
     def _discover_one(self, name):
         cfg = self.providers.get(name, {})
+        base = cfg.get("base", "")
+        if base and "://" not in base:
+            base = "http://" + base
         try:
-            return fetch_models(cfg.get("base", ""), cfg.get("key", "")), None
+            return fetch_models(base, cfg.get("key", "")), None
         except Exception as e:
             return [], f"sin conexión con {name}: {e}"
 
@@ -1504,15 +1639,31 @@ class TokenBar(QWidget):
 
 
 class VoiceTranscriber(QThread):
-    """Transcribe un archivo WAV a texto usando speech_recognition."""
+    """Transcribe un archivo WAV a texto.
+
+    Modos:
+      - local: usa speech_recognition (Python, offline, Google API)
+      - ia:    usa un modelo de IA via /v1/audio/transcriptions (OpenAI-compatible)
+    """
     done = Signal(str)
     error = Signal(str)
 
-    def __init__(self, wav_path, parent=None):
+    def __init__(self, wav_path, parent=None, mode="local",
+                 base=None, key="", model=""):
         super().__init__(parent)
         self.wav_path = wav_path
+        self.mode = mode
+        self.base = base
+        self.key = key
+        self.model = model
 
     def run(self):
+        if self.mode == "ia":
+            self._transcribe_ia()
+        else:
+            self._transcribe_local()
+
+    def _transcribe_local(self):
         try:
             import speech_recognition as sr
             r = sr.Recognizer()
@@ -1529,6 +1680,108 @@ class VoiceTranscriber(QThread):
             self.done.emit(text)
         except Exception as e:
             self.error.emit(str(e))
+
+    def _transcribe_ia(self):
+        """Usa /v1/audio/transcriptions (OpenAI-compatible, ej: LM Studio whisper)."""
+        try:
+            url = api_url(self.base, "/v1/audio/transcriptions")
+            with open(self.wav_path, "rb") as f:
+                files = {"file": (os.path.basename(self.wav_path), f, "audio/wav")}
+                data = {"model": self.model or "whisper-1", "language": "es"}
+                headers = {}
+                if self.key:
+                    headers["Authorization"] = f"Bearer {self.key}"
+                resp = requests.post(url, files=files, data=data,
+                                     headers=headers, timeout=120)
+            if resp.status_code == 415:
+                self.error.emit(
+                    f"El modelo '{self.model}' no soporta transcripción de audio "
+                    f"(HTTP 415). Necesitás un modelo tipo Whisper o Qwen2-Audio. "
+                    f"Descargá uno en LM Studio y elegílo en Preferencias → Modelo para voz.")
+                return
+            if resp.status_code == 404:
+                self.error.emit(
+                    f"El endpoint /v1/audio/transcriptions no existe en este provider. "
+                    f"¿Está LM Studio corriendo con un modelo de audio cargado?")
+                return
+            if resp.status_code != 200:
+                self.error.emit(f"HTTP {resp.status_code}: {resp.text[:200]}")
+                return
+            data = resp.json()
+            text = data.get("text", "").strip()
+            self.done.emit(text)
+        except Exception as e:
+            self.error.emit(f"Error transcripción IA: {e}")
+
+
+class PromptNavigator(QFrame):
+    """Panel flotante estilo 'prompt navigator': lista los prompts de la
+    conversación con su respuesta, y permite saltar a cada punto del chat."""
+
+    goto = Signal(int)  # posición en el QTextEdit del chat
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("promptNav")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 6, 8, 8)
+        v.setSpacing(4)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        lbl = QLabel("Prompt navigator")
+        lbl.setObjectName("promptNavTitle")
+        head.addWidget(lbl)
+        head.addStretch(1)
+        self.btn_up = QPushButton("↑")
+        self.btn_down = QPushButton("↓")
+        for b in (self.btn_up, self.btn_down):
+            b.setFixedSize(24, 24)
+            b.setObjectName("promptNavBtn")
+        self.btn_up.clicked.connect(lambda: self._step(-1))
+        self.btn_down.clicked.connect(lambda: self._step(1))
+        head.addWidget(self.btn_up)
+        head.addWidget(self.btn_down)
+        v.addLayout(head)
+        self.list = QListWidget()
+        self.list.setObjectName("promptNavList")
+        self.list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.list.itemClicked.connect(self._on_click)
+        v.addWidget(self.list, 1)
+        self.hide()
+
+    def add_prompt(self, pos, text):
+        short = text.replace("\n", " ").strip()
+        title = short[:60] + ("…" if len(short) > 60 else "")
+        it = QListWidgetItem(title)
+        it.setData(Qt.UserRole, pos)
+        it.setData(Qt.UserRole + 1, "")  # preview de respuesta
+        it.setToolTip(text)
+        self.list.addItem(it)
+        self.list.scrollToItem(it)
+
+    def set_response_preview(self, text):
+        """Actualiza el preview de respuesta del último prompt."""
+        if self.list.count() == 0:
+            return
+        it = self.list.item(self.list.count() - 1)
+        short = text.replace("\n", " ").strip()
+        it.setData(Qt.UserRole + 1, short[:120] + ("…" if len(short) > 120 else ""))
+        # Render con HTML: título bold + preview gris
+        title = it.text()
+        it.setText(f"<b>{html.escape(title)}</b><br>"
+                   f"<span style='color:#8a8f98'>{html.escape(it.data(Qt.UserRole + 1) or '')}</span>")
+
+    def _on_click(self, item):
+        self.goto.emit(int(item.data(Qt.UserRole) or 0))
+
+    def _step(self, delta):
+        row = self.list.currentRow()
+        n = self.list.count()
+        if n == 0:
+            return
+        row = max(0, min(n - 1, row + delta))
+        self.list.setCurrentRow(row)
+        self._on_click(self.list.item(row))
 
 
 class AudioMeter(QWidget):
@@ -1618,6 +1871,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Chat IA local — LM Studio")
         self.resize(860, 640)
+        app_icon = os.path.join(ICONS_DIR, "app.svg")
+        if os.path.exists(app_icon):
+            self.setWindowIcon(QIcon(app_icon))
         self.history = []
         self.pinned = []
         self._bookmarks = []
@@ -1913,12 +2169,21 @@ class MainWindow(QMainWindow):
         row2.addWidget(self.model_filter)
         row2.addWidget(btn_pick)
         row2.addWidget(btn_refresh)
+        self.btn_nav = QPushButton("🧭")
+        self.btn_nav.setCheckable(True)
+        self.btn_nav.setFixedSize(28, 28)
+        self.btn_nav.setToolTip("Prompt navigator: ver prompts anteriores")
+        self.btn_nav.toggled.connect(self._toggle_prompt_nav)
+        row2.addWidget(self.btn_nav)
         v.addLayout(row2)
 
         self.chat = QTextEdit()
         self.chat.setObjectName("chatView")
         self.chat.setReadOnly(True)
         v.addWidget(self.chat, 1)
+        # Prompt navigator flotante sobre el chat
+        self.prompt_nav = PromptNavigator(self.chat)
+        self.prompt_nav.goto.connect(self._goto_bookmark_pos)
 
         row3 = QHBoxLayout()
         input_col = QVBoxLayout()
@@ -2075,13 +2340,32 @@ class MainWindow(QMainWindow):
         it.setToolTip(text)
         it.setForeground(QColor("#eab308"))
         self.bm_list.addItem(it)
+        self.prompt_nav.add_prompt(pos, text)
 
     def _goto_bookmark(self, item):
         pos = int(item.data(Qt.UserRole) or 0)
+        self._goto_bookmark_pos(pos)
+
+    def _goto_bookmark_pos(self, pos):
         cursor = self.chat.textCursor()
         cursor.setPosition(min(pos, max(0, self.chat.document().characterCount() - 1)))
         self.chat.setTextCursor(cursor)
         self.chat.ensureCursorVisible()
+
+    def _toggle_prompt_nav(self, on):
+        if on:
+            self.prompt_nav.setGeometry(
+                self.chat.width() - 340, 8, 330, min(420, self.chat.height() - 16))
+            self.prompt_nav.show()
+            self.prompt_nav.raise_()
+        else:
+            self.prompt_nav.hide()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.prompt_nav.isVisible():
+            self.prompt_nav.setGeometry(
+                self.chat.width() - 340, 8, 330, min(420, self.chat.height() - 16))
 
     def _clear_bookmarks(self):
         self._bookmarks = []
@@ -2322,6 +2606,9 @@ class MainWindow(QMainWindow):
         ext = os.path.splitext(path)[1].lower()
         if ext in ImageViewerDialog.IMG_EXTS:
             dlg = ImageViewerDialog(self, path, rel)
+        elif ext in (".md", ".markdown"):
+            from utils.markdown_utils import MarkdownViewerDialog
+            dlg = MarkdownViewerDialog(self, path, rel)
         else:
             dlg = FileEditorDialog(self, path, rel, self.tools)
         dlg.exec()
@@ -2416,7 +2703,19 @@ class MainWindow(QMainWindow):
         if not os.path.exists(wav):
             self.statusBar().showMessage("Grabación vacía")
             return
-        self._voice_thread = VoiceTranscriber(wav)
+        if self.prefs.get("voice_ia", False):
+            ref = self.prefs.get("voice_model", "")
+            if ref and ref != "(usar el del combo)":
+                provider, _, model = ref.partition("::")
+                cfg = self.providers.get(provider, {})
+                base = cfg.get("base", LMSTUDIO)
+                key = cfg.get("key", "")
+            else:
+                base, model, key = self._current_provider()
+            self._voice_thread = VoiceTranscriber(
+                wav, mode="ia", base=base, key=key, model=model)
+        else:
+            self._voice_thread = VoiceTranscriber(wav, mode="local")
         self._voice_thread.done.connect(self._on_voice_done)
         self._voice_thread.error.connect(self._on_voice_error)
         self._voice_thread.start()
@@ -2449,10 +2748,11 @@ class MainWindow(QMainWindow):
         if not text:
             self.statusBar().showMessage("Escribí algo para pulir primero", 3000)
             return
-        # Usar modelo secundario de prefs, o el actual si no hay
-        sm = self.prefs.get("secondary_model", "")
-        if sm and sm != "(usar el del combo)":
-            provider, _, model = sm.partition("::")
+        # Prioridad: modelo para magia → secundario → el del combo
+        ref = (self.prefs.get("polish_model", "")
+               or self.prefs.get("secondary_model", ""))
+        if ref and ref != "(usar el del combo)":
+            provider, _, model = ref.partition("::")
             cfg = self.providers.get(provider, {})
             base = cfg.get("base", LMSTUDIO)
             key = cfg.get("key", "")
@@ -2481,10 +2781,26 @@ class MainWindow(QMainWindow):
             headers["x-opencode-session"] = session_id
         msgs = [
             {"role": "system", "content":
-             "Eres un asistente que mejora y pule textos en español. "
-             "Corregí ortografía, gramática y claridad. "
-             "Resumí si es muy largo. Mantené el significado original. "
-             "Respondé SOLO con el texto mejorado, sin explicaciones ni comentarios."},
+             "Eres un editor profesional experto en comunicación técnica. "
+             "Tu tarea: tomar un texto informal, desordenado o mal escrito "
+             "(como el de alguien que no sabe redactar) y transformarlo en "
+             "una petición clara, precisa y profesional, como la escribiría "
+             "un experto del área.\n\n"
+             "REGLAS:\n"
+             "1. Ortografía, gramática y MAYÚSCULAS correctas (inicio de "
+             "oración, nombres propios, siglas).\n"
+             "2. Organizá el texto en párrafos con sentido: una idea central "
+             "por párrafo; separá contexto, objetivo y detalles.\n"
+             "3. Reemplazá muletillas, repeticiones y lenguaje coloquial por "
+             "vocabulario preciso y profesional.\n"
+             "4. Si el texto pide algo técnico, redactalo como lo pediría un "
+             "profesional del área (usá la terminología correcta).\n"
+             "5. NO inventes requisitos ni detalles que no estén implícitos; "
+             "mantené SIEMPRE la intención original del autor.\n"
+             "6. Si el texto es muy largo, condensalo sin perder información "
+             "relevante.\n"
+             "7. Respondé SOLO con el texto mejorado, sin explicaciones, "
+             "comentarios ni comillas alrededor."},
             {"role": "user", "content": text},
         ]
         r = requests.post(api_url(base, "/chat/completions"),
@@ -3193,6 +3509,11 @@ class MainWindow(QMainWindow):
             self.last_prompt = self.worker.usage.get("prompt", 0)
         self.worker = None
         self._stream_active = False
+        # Preview de la respuesta en el prompt navigator
+        for msg in reversed(self.history):
+            if msg.get("role") == "assistant":
+                self.prompt_nav.set_response_preview(msg.get("content", ""))
+                break
         self.save_conv()
         self.refresh_conv_list()
         self.refresh_files()

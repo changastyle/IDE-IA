@@ -1,0 +1,28 @@
+{
+ "folder": "/private/var/folders/jj/x2_mf0ss3gvgsrsxm74btx500000gn/T/tmpwzkrycl6",
+ "model": "OpenCode Go::glm-5.3-flash",
+ "history": [
+  {
+   "role": "user",
+   "content": "[RESUMEN DE CONVERSACIÓN ANTERIOR]\n## Resumen de la conversación\n\n**Puntos clave:**\n- El usuario solicitó un archivo `readme.md` que describa de qué trata el proyecto.\n- No se compartió ningún archivo, código ni contexto del proyecto en la conversación, por lo que no fue posible generar el contenido del README.\n\n**Decisiones:**\n- Ninguna decisión tomada aún.\n\n**Archivos creados o modificados:**\n- Ninguno.\n\n**Tareas pendientes:**\n- Crear el archivo `readme.md` con la descripción del proyecto.\n- El usuario debe compartir información sobre el proyecto (archivos, código o descripción) para poder redactar el README.\n\n[NOTAS GUARDADAS]\n(ninguna)"
+  },
+  {
+   "role": "assistant",
+   "content": "Entendido, continúo con ese contexto."
+  },
+  {
+   "role": "user",
+   "content": "dime de que va este proyecto en un archivo readme.md"
+  }
+ ],
+ "pinned": [],
+ "token_log": [
+  {
+   "label": "#1",
+   "prompt": 4725,
+   "completion": 518,
+   "total_time": 7.301036834716797,
+   "model": "glm-5.3-flash"
+  }
+ ]
+}

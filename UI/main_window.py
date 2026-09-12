@@ -1,0 +1,1147 @@
+"""UI.py — Nuevo layout experimental (estilo IntelliJ).
+
+Estructura:
+  ┌────────────────────────────────────────────────────────┐
+  │ TopBar (50px, todo el ancho)                           │
+  ├────┬───────────────────────────────────────────────────┤
+  │ H  │  Body del body: 3 paneles intercambiables        │
+  │ o  │  ┌──────────┬───────────────┬──────────┐          │
+  │ t  │  │ Panel 1  │   Panel 2     │ Panel 3  │          │
+  │ b  │  └──────────┴───────────────┴──────────┘          │
+  │ a  │  ┌──────────────────────────────────────┐         │
+  │ r  │  │ Terminal flotante semitransparente   │         │
+  └────┴──└──────────────────────────────────────┘─────────┘
+
+- Los paneles se intercambian arrastrando su barra de título sobre otro panel.
+- Cada panel se colapsa a una franja vertical con su nombre (clic para expandir).
+- La terminal flota DENTRO del body del body (overlay, no quita espacio).
+- La hotbar (50px) tiene botones para mostrar/ocultar cada panel y la terminal.
+"""
+
+import os
+import sys
+import shlex
+
+from PySide6.QtCore import Qt, QMimeData, QPoint, Signal, QProcess
+from PySide6.QtGui import QDrag, QColor, QPainter, QFont, QAction
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QSplitter, QPlainTextEdit, QMenu, QFileDialog,
+    QGraphicsDropShadowEffect, QSizePolicy,
+    QDialog, QListWidget, QListWidgetItem,
+)
+
+from utils.git import (
+    is_repo, get_current_branch, list_branches, pull, push,
+    checkout, create_branch, has_remote,
+)
+
+MIME_PANEL = "application/x-ui-panel"
+TOPBAR_H = 50
+HOTBAR_W = 50
+TERMINAL_H = 300
+COLLAPSED_W = 30
+
+STYLE = """
+QMainWindow, QWidget { background:#16181c; color:#d7dae0; font-size:13px; }
+#TopBar { background:#1e2126; border-bottom:1px solid #2a2d33; }
+#TopBar QLabel { color:#e8eaed; font-weight:bold; font-size:14px; }
+#BottomBar { background:#1e2126; border-top:1px solid #2a2d33; }
+#BottomBar QLabel { color:#9aa0aa; font-size:11px; }
+QPushButton#tbFolder {
+    background:#2a2d33; border:none; border-radius:8px; padding:6px 14px;
+    color:#e8eaed; font-weight:bold; font-size:13px; text-align:left; }
+QPushButton#tbFolder:hover { background:#33373e; }
+QPushButton#tbProjects {
+    background:#2a2d33; border:none; border-radius:6px;
+    color:#9aa0aa; font-size:12px; padding:0; }
+QPushButton#tbProjects:hover { background:#33373e; color:#fff; }
+QListWidget#projList {
+    background:#22242a; border:1px solid #33363c; border-radius:8px;
+    padding:4px; font-size:13px; outline:none; }
+QListWidget#projList::item { padding:6px 10px; border-radius:6px; }
+QListWidget#projList::item:selected { background:#2f6fdb; color:#fff; }
+QListWidget#projList::item:hover { background:#2a2d33; }
+QPushButton#success {
+    background:#2f6fdb; border:none; border-radius:8px; padding:8px 18px;
+    color:#fff; font-weight:bold; }
+QPushButton#success:hover { background:#3d7fed; }
+QTableWidget {
+    background:#22242a; border:1px solid #33363c; border-radius:8px;
+    gridline-color:#2a2d33; font-size:13px; outline:none; }
+QTableWidget::item { padding:6px 10px; }
+QTableWidget::item:selected { background:#2f6fdb; color:#fff; }
+QHeaderView::section {
+    background:#1e2126; color:#9aa0aa; border:none;
+    padding:6px 10px; font-weight:bold; font-size:12px; }
+QKeySequenceEdit {
+    background:#22242a; border:1px solid #33363c; border-radius:6px;
+    padding:4px 8px; color:#e8eaed; }
+QPushButton#tbBranch {
+    background:transparent; border:none; border-radius:8px; padding:6px 10px;
+    color:#c8ccd4; font-weight:bold; font-size:13px; }
+QPushButton#tbBranch:hover { background:#2a2d33; }
+QPushButton#tbBranch:disabled { color:#555; }
+QPushButton#tbGit, QPushButton#tbNav {
+    background:transparent; border:none; border-radius:8px;
+    color:#c8ccd4; font-size:15px; font-weight:bold; }
+QPushButton#tbGit:hover, QPushButton#tbNav:hover { background:#2a2d33; color:#fff; }
+QPushButton#tbGit:disabled, QPushButton#tbNav:disabled { color:#555; }
+QPushButton#tbRunCfg {
+    background:#2a2d33; border:none; border-radius:8px; padding:6px 14px;
+    color:#e8eaed; font-weight:bold; font-size:13px; }
+QPushButton#tbRunCfg:hover { background:#33373e; }
+QPushButton#tbRunPlay {
+    background:transparent; border:none; border-radius:8px;
+    color:#4caf50; font-size:16px; font-weight:bold; }
+QPushButton#tbRunPlay:hover { background:#1d3a1f; }
+QPushButton#tbRunStop {
+    background:transparent; border:none; border-radius:8px;
+    color:#e5716f; font-size:14px; font-weight:bold; }
+QPushButton#tbRunStop:hover:enabled { background:#3a1d1d; }
+QPushButton#tbRunStop:disabled { color:#555; }
+QMenu#runMenu {
+    background:#22252b; border:1px solid #3a3e46; border-radius:10px;
+    padding:6px; color:#d7dae0; font-size:13px; }
+QMenu#runMenu::item { padding:6px 18px; border-radius:6px; }
+QMenu#runMenu::item:selected { background:#2f6fdb; }
+QLabel#panelTitle { color:#e8eaed; font-weight:bold; font-size:13px; }
+QLabel#panelChevron { color:#9aa0aa; font-size:12px; }
+QPushButton#panelHeadBtn {
+    background:transparent; border:none; border-radius:5px;
+    color:#9aa0aa; font-size:12px; }
+QPushButton#panelHeadBtn:hover { background:#2a2d33; color:#fff; }
+QTreeWidget#filesTree {
+    background:transparent; border:none; font-size:13px; outline:none; }
+QTreeWidget#filesTree::item { padding:2px 0; border-radius:5px; }
+QTreeWidget#filesTree::item:selected { background:#2f6fdb; }
+QTreeWidget#filesTree::item:hover { background:#2a2d33; }
+QFrame#centerEditor { background:#1a1c21; border:1px solid #2b2e34; border-radius:8px; }
+QTabWidget::pane { border:none; background:transparent; }
+QTabBar { qproperty-alignment: AlignLeft; qproperty-expanding: false; }
+QTabBar::tab {
+    background:#22242a; border:none; border-bottom:2px solid transparent;
+    padding:6px 10px 6px 14px; color:#9aa0aa; font-size:13px;
+    border-radius:6px 6px 0 0; text-align:left;
+    min-width:60px; max-width:200px; }
+QTabBar::tab:selected { background:#1a1c21; color:#e8eaed; border-bottom:2px solid #2f6fdb; }
+QTabBar::tab:hover:!selected { background:#2a2d33; color:#c8ccd4; }
+QTabBar::close-button {
+    image: url(iconos/close.svg);
+    subcontrol-position:right; width:12px; height:12px;
+    padding:2px; border-radius:3px; }
+QTabBar::close-button:hover { background:#3a3e46; }
+QTabBar::close-button:disabled { image:none; }
+QLabel#editorStatus {
+    background:#1e2126; color:#5c6370; font-size:11px;
+    border-top:1px solid #2b2e34; }
+QMenu#branchMenu {
+    background:#22252b; border:1px solid #3a3e46; border-radius:10px;
+    padding:6px; color:#d7dae0; font-size:13px; }
+QMenu#branchMenu::item { padding:6px 18px; border-radius:6px; }
+QMenu#branchMenu::item:selected { background:#2f6fdb; }
+QMenu#branchMenu::item:disabled { color:#666; }
+QMenu#folderMenu {
+    background:#22252b; border:1px solid #3a3e46; border-radius:10px;
+    padding:6px; color:#d7dae0; font-size:13px; }
+QMenu#folderMenu::item { padding:6px 18px; border-radius:6px; }
+QMenu#folderMenu::item:selected { background:#2f6fdb; }
+#HotBar { background:#1a1c21; border-right:1px solid #2a2d33; }
+#HotBar QPushButton {
+    background:transparent; border:none; border-radius:8px;
+    color:#9aa0aa; font-weight:bold; font-size:14px;
+}
+#HotBar QPushButton:hover { background:#2a2d33; color:#fff; }
+#HotBar QPushButton:checked { background:#2f6fdb; color:#fff; }
+#Panel { background:#1a1c21; border:1px solid #2a2d33; border-radius:8px; }
+#PanelHeader { background:#22252b; border-top-left-radius:8px;
+    border-top-right-radius:8px; }
+#PanelHeader QLabel { color:#c8ccd4; font-weight:bold; background:transparent; }
+#PanelHeader QPushButton {
+    background:transparent; border:none; color:#9aa0aa; font-size:12px; }
+#PanelHeader QPushButton:hover { color:#fff; background:#2f333a; border-radius:4px; }
+#PanelStrip { background:#22252b; border:1px solid #2a2d33; border-radius:6px; }
+#TerminalOverlay {
+    background:rgba(12,13,16,216);
+    border:1px solid #3a3f47; border-radius:10px; }
+#TerminalHeader { background:transparent; border:none; }
+#TerminalOverlay QLabel { color:#c8ccd4; font-weight:bold; background:transparent; }
+#TerminalOverlay QPlainTextEdit {
+    background:rgba(8,9,11,160); border:1px solid #2a2d33; border-radius:6px;
+    font-family:Menlo,monospace; font-size:12px; color:#c8f7c5; }
+#TerminalOverlay QPushButton { background:transparent; border:none; color:#9aa0aa; }
+#TerminalOverlay QPushButton:hover { color:#fff; background:#2f333a; border-radius:4px; }
+QSplitter::handle { background:#2a2d33; width:4px; }
+QSplitter::handle:hover { background:#2f6fdb; }
+"""
+
+
+class VerticalLabel(QWidget):
+    """Etiqueta con texto rotado 90° (para paneles colapsados)."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self.text = text
+        self.setToolTip(f"{text} — clic para expandir")
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, e):
+        p = self.parent()
+        while p is not None and not isinstance(p, Panel):
+            p = p.parent()
+        if isinstance(p, Panel):
+            p.set_collapsed(False)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QColor("#9aa0aa"))
+        f = QFont()
+        f.setPointSize(11)
+        f.setBold(True)
+        p.setFont(f)
+        p.translate(0, self.height())
+        p.rotate(-90)
+        p.drawText(0, 0, self.height(), self.height(),
+                   Qt.AlignHCenter | Qt.AlignVCenter, self.text)
+        p.end()
+
+
+class PanelHeader(QFrame):
+    """Barra de título del panel: draggable para intercambiar paneles."""
+
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self.setObjectName("PanelHeader")
+        self.setFixedHeight(30)
+        self.panel = panel
+        self._press_pos = None
+        h = QHBoxLayout(self)
+        h.setContentsMargins(8, 2, 4, 2)
+        h.setSpacing(4)
+        self.lbl = QLabel(panel.title)
+        h.addWidget(self.lbl)
+        h.addStretch(1)
+        btn = QPushButton("◀")
+        btn.setFixedSize(22, 22)
+        btn.setToolTip("Colapsar panel")
+        btn.clicked.connect(panel.toggle_collapse)
+        self.btn_collapse = btn
+        h.addWidget(btn)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._press_pos = e.position().toPoint()
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._press_pos is not None and \
+           (e.position().toPoint() - self._press_pos).manhattanLength() > 8:
+            self._start_drag()
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._press_pos = None
+        super().mouseReleaseEvent(e)
+
+    def _start_drag(self):
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(MIME_PANEL, self.panel.title.encode())
+        drag.setMimeData(mime)
+        pix = QPixmapSafe.grab(self.panel)
+        drag.setPixmap(pix.scaledToWidth(120, Qt.SmoothTransformation))
+        drag.setHotSpot(self._press_pos)
+        drag.exec(Qt.MoveAction)
+
+
+class QPixmapSafe:
+    """Namespace helper para grabar widgets a pixmap."""
+    @staticmethod
+    def grab(w):
+        return w.grab()
+
+
+class Panel(QFrame):
+    """Panel colapsable e intercambiable."""
+
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.title = title
+        self.collapsed = False
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        self.header = PanelHeader(self)
+        v.addWidget(self.header)
+        self.body = QFrame()
+        self.body.setStyleSheet(
+            "background:#202329; border-radius:6px; border:1px dashed #2f333a;")
+        v.addWidget(self.body, 1)
+        # Franja vertical para estado colapsado
+        self.strip = VerticalLabel(title)
+        self.strip.hide()
+        v.addWidget(self.strip, 1)
+        self.setAcceptDrops(True)
+        self.setMinimumWidth(120)
+
+    def toggle_collapse(self):
+        self.set_collapsed(not self.collapsed)
+
+    def set_collapsed(self, c):
+        self.collapsed = c
+        self.header.setVisible(not c)
+        self.body.setVisible(not c)
+        self.strip.setVisible(c)
+        if c:
+            self.setFixedWidth(30)
+        else:
+            self.setMinimumWidth(120)
+            self.setMaximumWidth(16777215)
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasFormat(MIME_PANEL):
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        other_title = bytes(e.mimeData().data(MIME_PANEL)).decode()
+        w = self.window()
+        if hasattr(w, "swap_panels"):
+            w.swap_panels(other_title, self.title)
+        e.acceptProposedAction()
+
+
+class HotBar(QFrame):
+    """Barra vertical de 50px con botones para paneles y terminal.
+
+    side: 'left' o 'right' (solo cambia el orden de los botones).
+    """
+
+    def __init__(self, side="left", buttons=None, checked=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("HotBar")
+        self.setFixedWidth(HOTBAR_W)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(4, 8, 4, 8)
+        v.setSpacing(6)
+        self.btns = {}
+        checked = checked or set()
+        # Definición de botones por defecto
+        if buttons is None:
+            buttons = (
+                ("p0", "1", "Panel 1"),
+                ("p1", "2", "Panel 2"),
+                ("p2", "3", "Panel 3"),
+                ("term", "⌨", "Terminal (flotante)"),
+            )
+        for key, label, tip in buttons:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setChecked(key in checked)
+            b.setFixedSize(38, 38)
+            b.setToolTip(tip)
+            v.addWidget(b)
+            self.btns[key] = b
+        v.addStretch(1)
+
+
+class TerminalOverlay(QFrame):
+    """Terminal flotante semitransparente dentro del body del body."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("TerminalOverlay")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 4, 8, 8)
+        v.setSpacing(4)
+        h = QHBoxLayout()
+        h.setSpacing(6)
+        lbl = QLabel("⌨ Terminal")
+        lbl.setStyleSheet("color:#9aa0aa; font-weight:bold; background:transparent;")
+        h.addWidget(lbl)
+        h.addStretch(1)
+        btn_hide = QPushButton("▼")
+        btn_hide.setFixedSize(22, 22)
+        btn_hide.setToolTip("Ocultar terminal")
+        btn_hide.clicked.connect(self.hide)
+        h.addWidget(btn_hide)
+        v.addLayout(h)
+        self.out = QPlainTextEdit()
+        self.out.setReadOnly(True)
+        self.out.setPlaceholderText("Terminal flotante (overlay)…")
+        v.addWidget(self.out, 1)
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(30)
+        shadow.setColor(QColor(0, 0, 0, 170))
+        shadow.setOffset(0, 4)
+        self.setGraphicsEffect(shadow)
+
+
+class ProjectsDialog(QDialog):
+    """Diálogo de proyectos previos: muestra sesiones abiertas y recientes,
+    permite abrir una nueva instancia en cualquiera de ellos."""
+
+    def __init__(self, parent, current_path, sessions, recents):
+        super().__init__(parent)
+        self.setWindowTitle("Open Previous Project")
+        self.resize(560, 420)
+        self.selected_path = None
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 12, 12, 12)
+        v.setSpacing(8)
+        home = os.path.expanduser("~")
+
+        def _disp(p):
+            return p.replace(home, "~")
+
+        # ---- Sesiones abiertas ----
+        if sessions:
+            v.addWidget(QLabel("Abiertas (instancias activas)"))
+            self.list_sessions = QListWidget()
+            self.list_sessions.setObjectName("projList")
+            for p in sessions:
+                name = os.path.basename(p)
+                mark = "● " if p == os.path.realpath(current_path or "") else "  "
+                it = QListWidgetItem(f"{mark}{name}   —   {_disp(p)}")
+                it.setData(Qt.UserRole, p)
+                it.setToolTip(p)
+                self.list_sessions.addItem(it)
+            self.list_sessions.itemDoubleClicked.connect(self._open_item)
+            v.addWidget(self.list_sessions, 2)
+            v.addSpacing(4)
+
+        # ---- Recientes ----
+        v.addWidget(QLabel("Recientes"))
+        self.list_recents = QListWidget()
+        self.list_recents.setObjectName("projList")
+        for p in recents:
+            if p in sessions:
+                continue
+            name = os.path.basename(p)
+            it = QListWidgetItem(f"  {name}   —   {_disp(p)}")
+            it.setData(Qt.UserRole, p)
+            it.setToolTip(p)
+            self.list_recents.addItem(it)
+        self.list_recents.itemDoubleClicked.connect(self._open_item)
+        v.addWidget(self.list_recents, 3)
+
+        # ---- Botones ----
+        row = QHBoxLayout()
+        self.btn_open_here = QPushButton("Abrir aquí")
+        self.btn_open_here.setToolTip("Cambiar esta ventana a la carpeta elegida")
+        self.btn_open_here.clicked.connect(self._open_here)
+        self.btn_new_window = QPushButton("Abrir en nueva ventana")
+        self.btn_new_window.setObjectName("success")
+        self.btn_new_window.setToolTip("Abrir una nueva instancia del IDE en esa carpeta")
+        self.btn_new_window.clicked.connect(self._open_new)
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.clicked.connect(self.reject)
+        row.addWidget(btn_cancel)
+        row.addStretch(1)
+        row.addWidget(self.btn_open_here)
+        row.addWidget(self.btn_new_window)
+        v.addLayout(row)
+
+    def _current_item_path(self):
+        for lst in (getattr(self, "list_sessions", None), self.list_recents):
+            if lst and lst.currentItem():
+                return lst.currentItem().data(Qt.UserRole)
+        return None
+
+    def _open_item(self, item):
+        self.selected_path = item.data(Qt.UserRole)
+        self.accept()
+
+    def _open_here(self):
+        p = self._current_item_path()
+        if p:
+            self.selected_path = p
+            self.setProperty("open_here", True)
+            self.accept()
+
+    def _open_new(self):
+        p = self._current_item_path()
+        if p:
+            self.selected_path = p
+            self.setProperty("open_here", False)
+            self.accept()
+
+
+class TopBar(QFrame):
+    """Barra superior de 50px: carpeta, rama git, pull/push, navegación,
+    y run configurations a la derecha."""
+
+    folder_changed = Signal(str)
+    navigate = Signal(str)      # 'back' | 'forward'
+    git_action = Signal(str)    # 'pull' | 'push' | 'commit' | f'checkout:{b}'
+    run_requested = Signal(str)  # nombre de la configuración a ejecutar
+    stop_requested = Signal()
+    edit_configs_requested = Signal()
+    open_new_window = Signal(str)  # path → abrir nueva instancia
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("TopBar")
+        self.setFixedHeight(TOPBAR_H)
+        self.repo_path = ""
+        h = QHBoxLayout(self)
+        h.setContentsMargins(10, 6, 10, 6)
+        h.setSpacing(8)
+
+        # Carpeta actual (botón principal)
+        self.btn_folder = QPushButton("Sin carpeta")
+        self.btn_folder.setObjectName("tbFolder")
+        self.btn_folder.setCursor(Qt.PointingHandCursor)
+        self.btn_folder.setToolTip("Carpeta de trabajo — clic para recientes")
+        self.btn_folder.clicked.connect(self._show_folder_menu)
+        h.addWidget(self.btn_folder)
+
+        # Dropdown de proyectos (flechita separada)
+        self.btn_projects = QPushButton("⌄")
+        self.btn_projects.setObjectName("tbProjects")
+        self.btn_projects.setFixedSize(22, 30)
+        self.btn_projects.setCursor(Qt.PointingHandCursor)
+        self.btn_projects.setToolTip("Open Previous Project — abrir en nueva ventana")
+        self.btn_projects.clicked.connect(self._show_projects_popup)
+        h.addWidget(self.btn_projects)
+
+        h.addSpacing(10)
+
+        # Rama git (botón con icono + nombre + chevron)
+        self.btn_branch = QPushButton("⎇ —")
+        self.btn_branch.setObjectName("tbBranch")
+        self.btn_branch.setCursor(Qt.PointingHandCursor)
+        self.btn_branch.setToolTip("Rama git — clic para ver ramas y acciones")
+        self.btn_branch.clicked.connect(self._show_branch_menu)
+        h.addWidget(self.btn_branch)
+
+        # Pull / Push
+        self.btn_pull = QPushButton("↙")
+        self.btn_pull.setObjectName("tbGit")
+        self.btn_pull.setFixedSize(30, 30)
+        self.btn_pull.setToolTip("Git pull")
+        self.btn_pull.clicked.connect(lambda: self.git_action.emit("pull"))
+        h.addWidget(self.btn_pull)
+        self.btn_push = QPushButton("↗")
+        self.btn_push.setObjectName("tbGit")
+        self.btn_push.setFixedSize(30, 30)
+        self.btn_push.setToolTip("Git push")
+        self.btn_push.clicked.connect(lambda: self.git_action.emit("push"))
+        h.addWidget(self.btn_push)
+
+        h.addSpacing(10)
+
+        # Navegación atrás / adelante
+        self.btn_back = QPushButton("↩")
+        self.btn_back.setObjectName("tbNav")
+        self.btn_back.setFixedSize(30, 30)
+        self.btn_back.setEnabled(False)
+        self.btn_back.setToolTip("Atrás (archivo anterior)")
+        self.btn_back.clicked.connect(lambda: self.navigate.emit("back"))
+        h.addWidget(self.btn_back)
+        self.btn_fwd = QPushButton("↪")
+        self.btn_fwd.setObjectName("tbNav")
+        self.btn_fwd.setFixedSize(30, 30)
+        self.btn_fwd.setEnabled(False)
+        self.btn_fwd.setToolTip("Adelante (archivo siguiente)")
+        self.btn_fwd.clicked.connect(lambda: self.navigate.emit("forward"))
+        h.addWidget(self.btn_fwd)
+
+        h.addStretch(1)
+
+        # ---- Run configurations (derecha, estilo IntelliJ) ----
+        self.run_configs = ["run"]  # nombres de configuraciones guardadas
+        self._run_current = "run"
+        self.btn_run_cfg = QPushButton("▶ run ⌄")
+        self.btn_run_cfg.setObjectName("tbRunCfg")
+        self.btn_run_cfg.setCursor(Qt.PointingHandCursor)
+        self.btn_run_cfg.setToolTip("Configuración de ejecución")
+        self.btn_run_cfg.clicked.connect(self._show_run_menu)
+        h.addWidget(self.btn_run_cfg)
+
+        self.btn_run = QPushButton("▶")
+        self.btn_run.setObjectName("tbRunPlay")
+        self.btn_run.setFixedSize(30, 30)
+        self.btn_run.setToolTip("Ejecutar la configuración seleccionada")
+        self.btn_run.clicked.connect(
+            lambda: self.run_requested.emit(self._run_current))
+        h.addWidget(self.btn_run)
+
+        self.btn_stop_run = QPushButton("⏹")
+        self.btn_stop_run.setObjectName("tbRunStop")
+        self.btn_stop_run.setFixedSize(30, 30)
+        self.btn_stop_run.setEnabled(False)
+        self.btn_stop_run.setToolTip("Detener el proceso")
+        self.btn_stop_run.clicked.connect(self.stop_requested.emit)
+        h.addWidget(self.btn_stop_run)
+
+    # ---- run configurations ----
+    def _show_run_menu(self):
+        menu = QMenu(self)
+        menu.setObjectName("runMenu")
+        for name in self.run_configs:
+            act = QAction(("▶  " if name == self._run_current else "    ") + name, menu)
+            act.triggered.connect(lambda _, n=name: self._select_run_cfg(n))
+            menu.addAction(act)
+        menu.addSeparator()
+        a_cur = QAction("Current File", menu)
+        a_cur.triggered.connect(lambda: self._select_run_cfg("(current file)"))
+        menu.addAction(a_cur)
+        menu.addSeparator()
+        a_edit = QAction("Edit Configurations…", menu)
+        a_edit.triggered.connect(self.edit_configs_requested.emit)
+        menu.addAction(a_edit)
+        menu.exec(self.btn_run_cfg.mapToGlobal(
+            QPoint(0, self.btn_run_cfg.height())))
+
+    def _select_run_cfg(self, name):
+        self._run_current = name
+        self.btn_run_cfg.setText(f"▶ {name} ⌄")
+
+    def set_run_running(self, running):
+        """Activa/desactiva el botón de stop."""
+        self.btn_stop_run.setEnabled(running)
+
+    # ---- carpeta ----
+    def set_folder(self, path):
+        from utils.recents import add_recent
+        self.repo_path = path or ""
+        name = os.path.basename(path) if path else "Sin carpeta"
+        self.btn_folder.setText(name)
+        self._refresh_git()
+        if path:
+            add_recent(path)
+
+    def _show_folder_menu(self):
+        from utils.recents import load_recents
+        from utils.sessions import load_sessions
+        menu = QMenu(self)
+        menu.setObjectName("folderMenu")
+        home = os.path.expanduser("~")
+        # Sesiones abiertas (instancias activas)
+        sessions = load_sessions()
+        if sessions:
+            head = menu.addAction("Abiertas")
+            head.setEnabled(False)
+            for p in sessions:
+                disp = p.replace(home, "~")
+                mark = "● " if p == os.path.realpath(self.repo_path or "") else "  "
+                act = QAction(mark + disp, menu)
+                act.setToolTip(p)
+                act.triggered.connect(lambda _, pp=p: self._select_folder(pp))
+                menu.addAction(act)
+            menu.addSeparator()
+        # Recientes
+        recents = load_recents()
+        if recents:
+            head = menu.addAction("Recientes")
+            head.setEnabled(False)
+            for p in recents:
+                if p in sessions:
+                    continue
+                disp = p.replace(home, "~")
+                mark = "● " if p == os.path.realpath(self.repo_path or "") else "  "
+                act = QAction(mark + disp, menu)
+                act.setToolTip(p)
+                act.triggered.connect(lambda _, pp=p: self._select_folder(pp))
+                menu.addAction(act)
+            menu.addSeparator()
+        a_open = QAction("📂  Abrir carpeta…", menu)
+        a_open.triggered.connect(self._pick_folder)
+        menu.addAction(a_open)
+        menu.exec(self.btn_folder.mapToGlobal(
+            QPoint(0, self.btn_folder.height())))
+
+    def _select_folder(self, path):
+        self.set_folder(path)
+        self.folder_changed.emit(path)
+
+    def _pick_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Elegir carpeta de trabajo")
+        if d:
+            self._select_folder(d)
+
+    def _show_projects_popup(self):
+        """Abre un diálogo con todos los proyectos previos y permite
+        abrir una nueva instancia en cualquiera de ellos."""
+        from utils.sessions import load_sessions
+        from utils.recents import load_recents
+        dlg = ProjectsDialog(self, self.repo_path, load_sessions(), load_recents())
+        if dlg.exec() and dlg.selected_path:
+            if dlg.property("open_here"):
+                self._select_folder(dlg.selected_path)
+            else:
+                self.open_new_window.emit(dlg.selected_path)
+
+    # ---- git ----
+    def _refresh_git(self):
+        if self.repo_path and is_repo(self.repo_path):
+            branch = get_current_branch(self.repo_path)
+            self.btn_branch.setText(f"⎇ {branch or 'detached'}")
+            self.btn_branch.setEnabled(True)
+        else:
+            self.btn_branch.setText("⎇ —")
+            self.btn_branch.setEnabled(False)
+
+    def _show_branch_menu(self):
+        if not self.repo_path:
+            return
+        menu = QMenu(self)
+        menu.setObjectName("branchMenu")
+        # Acciones git
+        a_upd = QAction("↙  Update Project (pull)", menu)
+        a_upd.triggered.connect(lambda: self.git_action.emit("pull"))
+        menu.addAction(a_upd)
+        a_com = QAction("●  Commit…", menu)
+        a_com.triggered.connect(lambda: self.git_action.emit("commit"))
+        menu.addAction(a_com)
+        a_psh = QAction("↗  Push…", menu)
+        a_psh.triggered.connect(lambda: self.git_action.emit("push"))
+        menu.addAction(a_psh)
+        menu.addSeparator()
+        a_new = QAction("＋  New Branch…", menu)
+        a_new.triggered.connect(self._new_branch)
+        menu.addAction(a_new)
+        menu.addSeparator()
+        # Ramas locales
+        local, remote = list_branches(self.repo_path)
+        cur = get_current_branch(self.repo_path)
+        if local:
+            head = menu.addAction("Local")
+            head.setEnabled(False)
+            for b in local:
+                act = QAction(("🏷  " if b == cur else "    ") + b, menu)
+                if b != cur:
+                    act.triggered.connect(
+                        lambda _, br=b: self.git_action.emit(f"checkout:{br}"))
+                else:
+                    act.setEnabled(False)
+                menu.addAction(act)
+        if remote:
+            head = menu.addAction("Remote")
+            head.setEnabled(False)
+            for b in remote:
+                act = QAction(f"☁  {b}", menu)
+                act.setEnabled(False)
+                menu.addAction(act)
+        menu.exec(self.btn_branch.mapToGlobal(
+            QPoint(0, self.btn_branch.height())))
+
+    def _new_branch(self):
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Nueva rama", "Nombre:")
+        if ok and name.strip():
+            self.git_action.emit(f"newbranch:{name.strip()}")
+
+
+class BottomBar(QFrame):
+    """Barra inferior de 30px, todo el ancho."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("BottomBar")
+        self.setFixedHeight(30)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(12, 2, 12, 2)
+        h.addWidget(QLabel("Bottom bar (30px)"))
+        h.addStretch(1)
+
+
+class SideZone(QSplitter):
+    """Zona lateral (izquierda o derecha) con paneles independientes.
+
+    Cada zona tiene su propio splitter vertical con paneles que se
+    pueden mostrar/ocultar independientemente de la otra zona.
+    """
+
+    def __init__(self, side="left", parent=None):
+        super().__init__(Qt.Vertical, parent)
+        self.side = side
+        self.setChildrenCollapsible(False)
+        self.setHandleWidth(4)
+        self.panels = []  # lista de Panel widgets
+        self._panel_map = {}  # key → Panel
+
+    def add_panel_widget(self, key, title, widget):
+        """Agrega un Panel que contiene un widget personalizado."""
+        p = Panel(title)
+        lay = p.body.layout()
+        if lay is None:
+            from PySide6.QtWidgets import QVBoxLayout
+            lay = QVBoxLayout(p.body)
+            lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(widget)
+        self.addWidget(p)
+        self.panels.append(p)
+        self._panel_map[key] = p
+        self.setSizes([200] * len(self.panels))
+        return p
+
+    def toggle(self, key, show):
+        p = self._panel_map.get(key)
+        if p is None:
+            return
+        p.setVisible(show)
+        if show:
+            p.set_collapsed(False)
+
+    def is_visible(self, key):
+        p = self._panel_map.get(key)
+        return p.isVisible() if p else False
+
+
+class MainBody(QWidget):
+    """Body del body: zona izq + centro + zona der + terminal flotante.
+
+    - Zona izquierda: controlada por hotbar izquierda
+    - Centro: editor (siempre visible)
+    - Zona derecha: controlada por hotbar derecha
+    - Terminal: flotante (overlay)
+    Cada zona tiene sus propios paneles, independientes entre sí.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+
+        # Splitter horizontal principal: izq | centro | der
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(4)
+        h.addWidget(self.main_splitter)
+
+        # Zona izquierda
+        self.left_zone = SideZone("left")
+        self.main_splitter.addWidget(self.left_zone)
+
+        # Centro (editor)
+        from UI.panels.editor_panel import EditorPanel
+        self.center = EditorPanel()
+        self.main_splitter.addWidget(self.center)
+
+        # Zona derecha
+        self.right_zone = SideZone("right")
+        self.main_splitter.addWidget(self.right_zone)
+
+        self.main_splitter.setSizes([260, 700, 260])
+
+        # Panel de archivos en zona izquierda
+        from UI.panels.files_panel import FilesPanel
+        self.files_panel = FilesPanel()
+        self.left_zone.add_panel_widget("files", "Project", self.files_panel)
+
+        # Paneles placeholder en zona izquierda
+        p1l = QLabel("Panel 2 (izq)")
+        p1l.setAlignment(Qt.AlignCenter)
+        p1l.setStyleSheet("color:#666;")
+        self.left_zone.add_panel_widget("p1", "Panel 2", p1l)
+        self.left_zone.toggle("p1", False)
+        p2l = QLabel("Panel 3 (izq)")
+        p2l.setAlignment(Qt.AlignCenter)
+        p2l.setStyleSheet("color:#666;")
+        self.left_zone.add_panel_widget("p2", "Panel 3", p2l)
+        self.left_zone.toggle("p2", False)
+
+        # Panel de archivos en zona derecha (independiente, oculto al inicio)
+        self.files_panel_right = FilesPanel()
+        self.right_zone.add_panel_widget("files", "Project", self.files_panel_right)
+        self.right_zone.toggle("files", False)
+
+        # Paneles placeholder en zona derecha
+        p1r = QLabel("Panel 2 (der)")
+        p1r.setAlignment(Qt.AlignCenter)
+        p1r.setStyleSheet("color:#666;")
+        self.right_zone.add_panel_widget("p1", "Panel 2", p1r)
+        self.right_zone.toggle("p1", False)
+        p2r = QLabel("Panel 3 (der)")
+        p2r.setAlignment(Qt.AlignCenter)
+        p2r.setStyleSheet("color:#666;")
+        self.right_zone.add_panel_widget("p2", "Panel 3", p2r)
+        self.right_zone.toggle("p2", False)
+
+        # Terminal flotante
+        self.terminal = TerminalOverlay(self)
+        self.terminal.hide()
+        self.proc = None
+
+        # Conectar play de ambos paneles → terminal
+        self.files_panel.run_requested.connect(self._run_file)
+        self.files_panel_right.run_requested.connect(self._run_file)
+
+    def _run_file(self, path):
+        """Ejecuta un archivo .py/.js/.java en la terminal flotante."""
+        if self.proc is not None and self.proc.state() != QProcess.NotRunning:
+            self.terminal.out.appendPlainText("⚠ Ya hay un proceso corriendo.")
+            return
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".py":
+            runner = "python3"
+        elif ext == ".js":
+            runner = "node"
+        elif ext == ".java":
+            runner = "java"
+        else:
+            return
+        fname = os.path.basename(path)
+        file_dir = os.path.dirname(path)
+        cmd = f"cd {shlex.quote(file_dir)} && {runner} {shlex.quote(fname)}"
+        self.terminal.out.clear()
+        self.terminal.out.appendPlainText(f"$ cd {file_dir} && {runner} {fname}")
+        self.toggle_terminal(True)
+        self.proc = QProcess()
+        self.proc.setWorkingDirectory(file_dir)
+        self.proc.readyReadStandardOutput.connect(
+            lambda: self.terminal.out.appendPlainText(
+                str(self.proc.readAllStandardOutput(), "utf-8", "replace").rstrip()))
+        self.proc.readyReadStandardError.connect(
+            lambda: self.terminal.out.appendPlainText(
+                str(self.proc.readAllStandardError(), "utf-8", "replace").rstrip()))
+        self.proc.finished.connect(self._on_proc_finished)
+        self.proc.start("/bin/zsh", ["-c", cmd])
+
+    def _stop_proc(self):
+        if self.proc is not None and self.proc.state() != QProcess.NotRunning:
+            self.proc.terminate()
+            if not self.proc.waitForFinished(2000):
+                self.proc.kill()
+
+    def _on_proc_finished(self, code, _status):
+        self.terminal.out.appendPlainText(f"— proceso terminado (código {code}) —")
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._place_terminal()
+
+    def _place_terminal(self):
+        self.terminal.setGeometry(
+            8, self.height() - 300 - 8, self.width() - 16, 300)
+
+    def toggle_terminal(self, show=None):
+        if show is None:
+            show = not self.terminal.isVisible()
+        if show:
+            self._place_terminal()
+            self.terminal.show()
+            self.terminal.raise_()
+        else:
+            self.terminal.hide()
+
+    def set_root(self, path):
+        """Actualiza ambos paneles de archivos con la nueva carpeta."""
+        self.files_panel.set_root(path)
+        self.files_panel_right.set_root(path)
+
+
+class UIMainWindow(QMainWindow):
+    """Ventana principal del nuevo layout."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("UI nueva — IDE IA")
+        self.resize(1400, 860)
+        # Icono de la ventana
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "iconos", "app.svg")
+        if os.path.exists(icon_path):
+            from PySide6.QtGui import QIcon
+            self.setWindowIcon(QIcon(icon_path))
+        # Historial de navegación (archivos abiertos)
+        self._nav_back = []
+        self._nav_fwd = []
+        self._nav_current = None
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        # Top bar (50px, todo el ancho)
+        self.top_bar = TopBar()
+        root.addWidget(self.top_bar)
+        # Fila central: hotbar izq + body + hotbar der
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        self.hotbar_left = HotBar(
+            side="left",
+            buttons=(
+                ("files", "📁", "Panel de archivos"),
+                ("p1", "2", "Panel 2 (izq)"),
+                ("p2", "3", "Panel 3 (izq)"),
+                ("term", "⌨", "Terminal (flotante)"),
+            ),
+            checked={"files"})
+        self.hotbar_right = HotBar(
+            side="right",
+            buttons=(
+                ("files", "📁", "Panel de archivos"),
+                ("p1", "2", "Panel 2 (der)"),
+                ("p2", "3", "Panel 3 (der)"),
+                ("term", "⌨", "Terminal (flotante)"),
+            ),
+            checked=set())
+        self.body = MainBody()
+        row.addWidget(self.hotbar_left)
+        row.addWidget(self.body, 1)
+        row.addWidget(self.hotbar_right)
+        root.addLayout(row, 1)
+        # Bottom bar (30px, todo el ancho)
+        self.bottom_bar = BottomBar()
+        root.addWidget(self.bottom_bar)
+        # Hotbar izquierda → zona izquierda (independiente)
+        self.hotbar_left.btns["files"].toggled.connect(
+            lambda on: self.body.left_zone.toggle("files", on))
+        self.hotbar_left.btns["p1"].toggled.connect(
+            lambda on: self.body.left_zone.toggle("p1", on))
+        self.hotbar_left.btns["p2"].toggled.connect(
+            lambda on: self.body.left_zone.toggle("p2", on))
+        self.hotbar_left.btns["term"].toggled.connect(
+            lambda on: self.body.toggle_terminal(on))
+        # Hotbar derecha → zona derecha (independiente)
+        self.hotbar_right.btns["files"].toggled.connect(
+            lambda on: self.body.right_zone.toggle("files", on))
+        self.hotbar_right.btns["p1"].toggled.connect(
+            lambda on: self.body.right_zone.toggle("p1", on))
+        self.hotbar_right.btns["p2"].toggled.connect(
+            lambda on: self.body.right_zone.toggle("p2", on))
+        self.hotbar_right.btns["term"].toggled.connect(
+            lambda on: self.body.toggle_terminal(on))
+        # Top bar → acciones
+        self.top_bar.folder_changed.connect(self._on_folder_changed)
+        self.top_bar.navigate.connect(self._on_navigate)
+        self.top_bar.git_action.connect(self._on_git_action)
+        self.top_bar.run_requested.connect(self._on_run_requested)
+        self.top_bar.stop_requested.connect(self._on_stop_requested)
+        self.top_bar.edit_configs_requested.connect(self._open_settings)
+        self.top_bar.open_new_window.connect(self._open_new_window)
+        # Panel de archivos sigue a la carpeta de la top bar
+        self.body.files_panel.file_activated.connect(self._on_file_activated)
+        self.body.files_panel_right.file_activated.connect(self._on_file_activated)
+        # Restaurar última carpeta abierta (o la del proyecto si no hay)
+        from utils.sessions import last_session, add_session
+        start_dir = last_session() or os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))
+        self.top_bar.set_folder(start_dir)
+        self.body.set_root(start_dir)
+        add_session(start_dir)
+        # Guardar sesión al cerrar
+        app = QApplication.instance()
+        app.aboutToQuit.connect(self._save_session)
+
+    # ---- navegación atrás/adelante ----
+    def push_history(self, location):
+        """Registra una ubicación (ej: archivo abierto) en el historial."""
+        if location == self._nav_current:
+            return
+        if self._nav_current is not None:
+            self._nav_back.append(self._nav_current)
+            self._nav_fwd.clear()
+        self._nav_current = location
+        self._update_nav_btns()
+
+    def _on_navigate(self, direction):
+        if direction == "back" and self._nav_back:
+            self._nav_fwd.append(self._nav_current)
+            self._nav_current = self._nav_back.pop()
+        elif direction == "forward" and self._nav_fwd:
+            self._nav_back.append(self._nav_current)
+            self._nav_current = self._nav_fwd.pop()
+        self._update_nav_btns()
+        self.statusBar().showMessage(f"Ubicación: {self._nav_current}", 2500)
+
+    def _update_nav_btns(self):
+        self.top_bar.btn_back.setEnabled(bool(self._nav_back))
+        self.top_bar.btn_fwd.setEnabled(bool(self._nav_fwd))
+
+    # ---- carpeta ----
+    def _on_folder_changed(self, path):
+        from utils.sessions import add_session
+        self.body.set_root(path)
+        add_session(path)
+        self.statusBar().showMessage(f"Carpeta: {path}", 3000)
+
+    def _save_session(self):
+        """Guarda la carpeta actual al cerrar la app."""
+        from utils.sessions import add_session
+        if self.top_bar.repo_path:
+            add_session(self.top_bar.repo_path)
+
+    def _open_new_window(self, path):
+        """Abre una nueva instancia del IDE en otra carpeta."""
+        from utils.sessions import add_session
+        add_session(path)
+        w = UIMainWindow()
+        w.top_bar.set_folder(path)
+        w.body.set_root(path)
+        w.show()
+        # Mantener referencia para que no la recoja el GC
+        if not hasattr(QApplication.instance(), "_windows"):
+            QApplication.instance()._windows = []
+        QApplication.instance()._windows.append(w)
+
+    def _open_settings(self):
+        """Abre el diálogo de Settings con la pestaña de shortcuts."""
+        from UI.panels.settings_panel import SettingsDialog
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            # Recargar shortcuts en el editor
+            self.body.center.reload_shortcuts()
+            self.statusBar().showMessage("Atajos guardados", 3000)
+
+    # ---- archivos ----
+    def _on_file_activated(self, path):
+        self.push_history(path)
+        self.body.center.open_file(path)
+        self.statusBar().showMessage(f"Abierto: {os.path.basename(path)}", 3000)
+
+    # ---- git ----
+    def _on_git_action(self, action):
+        repo = self.top_bar.repo_path
+        if not repo:
+            return
+        if action == "pull":
+            ok, out = pull(repo)
+        elif action == "push":
+            ok, out = push(repo)
+        elif action == "commit":
+            self.statusBar().showMessage("Commit: pendiente de implementar", 3000)
+            return
+        elif action.startswith("newbranch:"):
+            ok, out = create_branch(repo, action.split(":", 1)[1])
+        elif action.startswith("checkout:"):
+            ok, out = checkout(repo, action.split(":", 1)[1])
+        else:
+            return
+        self.statusBar().showMessage(
+            ("✔ " if ok else "✖ ") + out.replace("\n", " ")[:120], 5000)
+        self.top_bar._refresh_git()
+
+    # ---- run configurations ----
+    def _on_run_requested(self, name):
+        self.statusBar().showMessage(f"▶ Ejecutando: {name}", 3000)
+        self.top_bar.set_run_running(True)
+
+    def _on_stop_requested(self):
+        self.body._stop_proc()
+        self.top_bar.set_run_running(False)
+        self.statusBar().showMessage("⏹ Detenido", 3000)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyleSheet(STYLE)
+    # Icono de la app
+    from PySide6.QtGui import QIcon
+    icon_path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "iconos", "app.svg")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+    w = UIMainWindow()
+    w.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

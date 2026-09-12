@@ -1,0 +1,2 @@
+/Users/nico/Desktop/cli-ia/sub-carpeta-for-test
+/Users/nico/Desktop/cli-ia
