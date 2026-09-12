@@ -1,0 +1,81 @@
+# 🗺️ Mapa del Proyecto — Snake Game
+
+Proyecto: un juego clásico de la serpiente (Snake) en HTML5 Canvas + JavaScript vanilla.
+Hay dos páginas HTML equivalentes que comparten la misma lógica y los mismos estilos.
+
+---
+
+## 📄 Archivos
+
+### `index.html` — Página principal del juego
+- **Propósito**: punto de entrada principal; monta la estructura DOM del juego.
+- **Contenido / secciones**:
+  - `<header id="hud">` con `<span id="score">` y `<span id="best">` para puntuación y récord.
+  - `<main id="game-container">` con `<canvas id="gameCanvas">` (lienzo del juego) y un `#overlay` con título `#overlayTitle`, mensaje `#overlayMsg` y botón `#restartBtn` (estado Game Over).
+  - `<footer id="hint">` con instrucciones.
+- **Relaciones**: enlaza `styles.css` (hoja de estilos) y `snake.js` (lógica del juego).
+
+### `snake.html` — Variante "simple" de la página
+- **Propósito**: versión alternativa/simplificada de `index.html`, con el mismo marcado y comportamiento.
+- **Diferencias con `index.html`**:
+  - `<title>` distinto: "Snake Game (versión simple)".
+  - Incluye un `<style>` inline que fuerza `body { background: #1a1a2e; }` (anula el gradiente de `styles.css`).
+- **Relaciones**: idénticas dependencias (`styles.css` + `snake.js`); los IDs del DOM que `snake.js` consulta son los mismos.
+
+### `snake.js` — Lógica del juego
+- **Propósito**: toda la mecánica de Snake. Encapsulada en una IIFE (`(function(){...})()`) en modo estricto para no contaminar el scope global.
+- **Constantes**:
+  - `gridSize = 20`, `tileCount = 20` → tablero de 20×20 celdas.
+  - `STEP_MS = 110` → velocidad (ms por tick / movimiento de la serpiente).
+- **Estado (variables)**:
+  - `snake` (array de celdas `{x,y}`), `food`, `dir`, `nextDir`, `score`, `best` (persistido en `localStorage` con clave `snake_best`), `running`, `lastStep`, `rafId`.
+- **Funciones principales**:
+  - `init()`: reinicia el juego, dimensiona el canvas, coloca la serpiente inicial, genera comida, oculta el overlay y arranca el `requestAnimationFrame`.
+  - `loop(ts)`: bucle principal basado en `requestAnimationFrame`; avanza con `tick()` cada `STEP_MS` y redibuja con `draw()`.
+  - `tick()`: mueve la cabeza según `nextDir`, detecta colisiones con paredes y consigo misma (llama a `gameOver()`), gestiona el crecimiento al comer y recoloca la comida si cae sobre la serpiente.
+  - `draw()`: pinta el fondo, la cuadrícula sutil, la comida y la serpiente (cabeza en verde claro `#7CFF6B`, cuerpo en verde `#00cc66`).
+  - `roundRect(x,y,w,h,r)`: helper para dibujar rectángulos con esquinas redondeadas (canvas).
+  - `placeFood()`: posiciona comida en una celda aleatoria.
+  - `gameOver()`: detiene el juego, actualiza y guarda el récord en `localStorage`, muestra el overlay con mensaje (incluye "¡Nuevo récord!" si corresponde).
+  - `updateHud()`: actualiza el texto de `#score` y `#best`.
+  - `showOverlay(title,msg)` / `hideOverlay()`: gestionan el overlay de Game Over.
+  - `setDirection(key)`: cambia `nextDir` según la flecha; si el juego está parado, cualquier flecha reinicia (`init()`). Impide invertir 180° en un solo movimiento.
+- **Eventos**:
+  - `keydown`: previene scroll con flechas/Espacio y delega en `setDirection`.
+  - `click` en `#restartBtn`: llama a `init()`.
+  - `touchstart` / `touchend`: soporte táctil básico — convierte un swipe en dirección (`ArrowUp/Down/Left/Right`).
+- **Dependencias del DOM** (deben existir en el HTML): `#gameCanvas`, `#score`, `#best`, `#overlay`, `#overlayTitle`, `#overlayMsg`, `#restartBtn`.
+- **Persistencia**: usa `localStorage["snake_best"]` para guardar el mejor récord entre sesiones.
+
+### `styles.css` — Hoja de estilos
+- **Propósito**: apariencia visual de la página y del HUD/overlay.
+- **Reglas clave**:
+  - Reset con `* { box-sizing: border-box; }` y layout flex en `body` con fondo en gradiente (`#1a1a2e` → `#16213e`).
+  - `#hud`: barra superior con puntuación (verde `#7CFF6B`) y récord (amarillo `#ffd166`).
+  - `#game-container`: contenedor del canvas (400×400, responsive con `max-width/max-height: 95vw`), con borde, `overflow: hidden` y sombra.
+  - `#gameCanvas`: ocupa el 100% del contenedor con fondo `#0f0f1a`.
+  - `#overlay`: capa semitransparente centrada sobre el canvas; `#overlay.hidden` la oculta con `display: none`.
+  - `#restartBtn`: botón verde con hover/active.
+  - `#hint`: pie con instrucciones, color tenue.
+  - `@media (max-width: 480px)`: ajustes para móvil (fuente más pequeña).
+- **Relaciones**: estiliza exactamente los IDs/elementos que `snake.js` espera (`#score`, `#best`, `#overlay`, `#overlay.hidden`, `#restartBtn`).
+
+---
+
+## 🔗 Relaciones entre archivos
+
+```
+index.html   ──┐
+               ├──► styles.css  (estilos compartidos)
+snake.html  ──┤
+               └──► snake.js    (lógica compartida; lee IDs del DOM)
+```
+
+- `index.html` y `snake.html` son intercambiables: cargan los mismos recursos y exponen los mismos IDs. Abrir cualquiera de los dos arranca el mismo juego.
+- `snake.js` es el "cerebro" y depende del contrato de DOM definido por ambos HTML.
+- `styles.css` define la apariencia; `snake.html` la sobreescribe parcialmente con un `<style>` inline en `body`.
+- Hay una carpeta oculta `.idea/` (configuración del IDE, no forma parte del juego).
+
+## 🧭 Cómo arrancar
+- Abrir `index.html` (o `snake.html`) directamente en un navegador, o servir la carpeta con cualquier servidor estático.
+- Controles: flechas del teclado, botón "Reiniciar", o swipe táctil.
