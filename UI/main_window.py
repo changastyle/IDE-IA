@@ -50,6 +50,7 @@ from utils.git import (
 from utils.git_utils import GitUtils
 
 MIME_PANEL = "application/x-ui-panel"
+SHOW_SPLASH = False  # splash + chime de inicio
 TOPBAR_H = 50
 HOTBAR_W = 50
 TERMINAL_H = 300
@@ -1787,6 +1788,8 @@ class MainBody(QWidget):
         pp = self.left_zone.add_panel_widget(
             "planner", "Planner", self.planner_panel)
         pp.header.add_action("↻", "Refrescar", self.planner_panel.reload)
+        pp.header.add_action("▤", "Log de ejecución",
+                             self.planner_panel.toggle_log)
         self.left_zone.toggle("planner", False)
 
         # Panel de Git (ramas + grafo) en zona izquierda
@@ -1840,7 +1843,37 @@ class MainBody(QWidget):
         ppr = self.right_zone.add_panel_widget(
             "planner", "Planner", self.planner_panel_right)
         ppr.header.add_action("↻", "Refrescar", self.planner_panel_right.reload)
+        ppr.header.add_action("▤", "Log de ejecución",
+                              self.planner_panel_right.toggle_log)
         self.right_zone.toggle("planner", False)
+
+        # Los planners ejecutan pasos con el provider/modelo de su chat
+        self.planner_panel.provider_fn = self.chat_panel._current_provider
+        self.planner_panel_right.provider_fn = (
+            self.chat_panel_right._current_provider)
+        # Chip de modelo en el header del Planner (mismo combo del chat)
+        self.planner_panel.chat = self.chat_panel
+        self.planner_panel_right.chat = self.chat_panel_right
+        pp.header.add_right(self.planner_panel.model_btn)
+        ppr.header.add_right(self.planner_panel_right.model_btn)
+        self.planner_panel._sync_model_chip()
+        self.planner_panel_right._sync_model_chip()
+        # La IA del planner toca archivos → refrescar árboles
+        self.planner_panel.files_changed.connect(self.files_panel.refresh)
+        self.planner_panel.files_changed.connect(
+            self.files_panel_right.refresh)
+        self.planner_panel_right.files_changed.connect(
+            self.files_panel.refresh)
+        self.planner_panel_right.files_changed.connect(
+            self.files_panel_right.refresh)
+        # Chips de archivos del planner → abrir en el editor (path absoluto)
+        self.planner_panel.open_file_requested.connect(
+            self.center.open_file)
+        self.planner_panel_right.open_file_requested.connect(
+            self.center.open_file)
+        # Un planner que escribe en planner/ → el gemelo recarga en vivo
+        self.planner_panel.mutated.connect(self.planner_panel_right.reload)
+        self.planner_panel_right.mutated.connect(self.planner_panel.reload)
 
         # Terminal flotante (con pestañas)
         self.terminal = TerminalOverlay(self)
@@ -2658,14 +2691,16 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     # Splash: negro con dorado, sobre la ventana principal
-    _play_startup_sound()
-    splash = QSplashScreen(_splash_pixmap())
-    splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-    splash.show()
-    app.processEvents()
+    if SHOW_SPLASH:
+        _play_startup_sound()
+        splash = QSplashScreen(_splash_pixmap())
+        splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        splash.show()
+        app.processEvents()
     w = UIMainWindow()
     w.show()
-    QTimer.singleShot(1500, lambda: splash.finish(w))
+    if SHOW_SPLASH:
+        QTimer.singleShot(1500, lambda: splash.finish(w))
     sys.exit(app.exec())
 
 

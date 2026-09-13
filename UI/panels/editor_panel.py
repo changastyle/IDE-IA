@@ -12,7 +12,7 @@ import difflib
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import (
     QFont, QColor, QSyntaxHighlighter, QTextCharFormat, QTextCursor,
-    QKeySequence, QShortcut, QTextBlockUserData, QTextFormat,
+    QKeySequence, QShortcut, QTextBlockUserData, QTextFormat, QPixmap,
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPlainTextEdit,
@@ -792,6 +792,135 @@ class EditorTab(QWidget):
         self.editor.line_numbers.update()
 
 
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic",
+              ".svg", ".tif", ".tiff"}
+
+
+class ImageTab(QWidget):
+    """Tab de imagen: viewer con scroll, ajuste a ventana y zoom.
+    Misma API mínima que EditorTab para convivir en el EditorPanel."""
+
+    review_accepted = Signal(str)   # compat: nunca se emiten en imágenes
+    review_rejected = Signal(str)
+    prev_file = Signal(str)
+    next_file = Signal(str)
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self._fit = True
+        self._zoom = 1.0
+        self._pm = QPixmap()
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        # Barra superior: nombre + dimensiones + controles de zoom
+        bar = QWidget()
+        bar.setStyleSheet(
+            "background:#1d1f24; border-bottom:1px solid #32363d;")
+        bh = QHBoxLayout(bar)
+        bh.setContentsMargins(10, 4, 10, 4)
+        bh.setSpacing(6)
+        self.info = QLabel("")
+        self.info.setStyleSheet("color:#9da3ae; font-size:11px;")
+        bh.addWidget(self.info)
+        bh.addStretch(1)
+        for txt, tip, cb in (
+                ("Ajustar", "Ajustar a la ventana", self._set_fit),
+                ("100%", "Tamaño real", self._set_100),
+                ("＋", "Acercar", lambda: self._zoom_by(1.25)),
+                ("－", "Alejar", lambda: self._zoom_by(0.8))):
+            b = QPushButton(txt)
+            b.setToolTip(tip)
+            b.setFixedHeight(24)
+            b.setStyleSheet(
+                "QPushButton{background:#2a2d33;border:1px solid #3f4246;"
+                "border-radius:4px;color:#dfe1e5;padding:2px 10px;"
+                "font-size:11px;} QPushButton:hover{background:#353b45;}")
+            b.clicked.connect(cb)
+            bh.addWidget(b)
+        v.addWidget(bar)
+        # Scroll con la imagen centrada
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet(
+            "QScrollArea{background:#14161a; border:none;}")
+        self.img = QLabel()
+        self.img.setAlignment(Qt.AlignCenter)
+        self.img.setStyleSheet("background:#14161a;")
+        self.scroll.setWidget(self.img)
+        v.addWidget(self.scroll, 1)
+        self.load()
+
+    # ---- API de tab (compatible con EditorTab) ----
+
+    def load(self):
+        self._pm = QPixmap(self.path)
+        if self._pm.isNull():
+            self.img.setText(f"No se pudo cargar la imagen:\n{self.path}")
+            self.img.setStyleSheet("color:#ff6b63; background:#14161a;")
+            return
+        kb = max(1, os.path.getsize(self.path) // 1024)
+        self.info.setText(
+            f"{os.path.basename(self.path)}    "
+            f"{self._pm.width()}×{self._pm.height()} · {kb} KB")
+        self._refresh()
+
+    def is_modified(self):
+        return False
+
+    def save(self):
+        return False
+
+    def in_review(self):
+        return False
+
+    def start_review(self, before):
+        pass
+
+    def end_review(self):
+        pass
+
+    def set_file_nav(self, idx, total):
+        pass
+
+    # ---- Zoom / ajuste ----
+
+    def _set_fit(self):
+        self._fit = True
+        self._refresh()
+
+    def _set_100(self):
+        self._fit = False
+        self._zoom = 1.0
+        self._refresh()
+
+    def _zoom_by(self, factor):
+        self._fit = False
+        self._zoom = max(0.05, min(20.0, self._zoom * factor))
+        self._refresh()
+
+    def _refresh(self):
+        if self._pm.isNull():
+            return
+        if self._fit:
+            avail = self.scroll.viewport().size()
+            pm = self._pm.scaled(max(40, avail.width() - 8),
+                                 max(40, avail.height() - 8),
+                                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        else:
+            pm = self._pm.scaled(int(self._pm.width() * self._zoom),
+                                 int(self._pm.height() * self._zoom),
+                                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.img.setPixmap(pm)
+        self.img.adjustSize()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self._fit:
+            self._refresh()
+
+
 class EditorPanel(QWidget):
     """Panel central: tabs de archivos abiertos con editor + números de línea."""
 
@@ -899,7 +1028,11 @@ class EditorPanel(QWidget):
                 tab.load()
             self._update_status(path)
         else:
-            tab = EditorTab(path)
+            ext = os.path.splitext(path)[1].lower()
+            if ext in IMAGE_EXTS and not QPixmap(path).isNull():
+                tab = ImageTab(path)
+            else:
+                tab = EditorTab(path)
             tab.review_accepted.connect(self._on_tab_review_accepted)
             tab.review_rejected.connect(self._on_tab_review_rejected)
             tab.prev_file.connect(lambda p: self._review_nav(p, -1))
@@ -910,14 +1043,14 @@ class EditorPanel(QWidget):
             self.tabs.setCurrentIndex(idx)
             self.file_opened.emit(path)
             self._update_status(path)
-        if goto_line and tab:
+        if goto_line and tab and hasattr(tab, "editor"):
             self.goto_line(tab, goto_line)
         return tab
 
     def start_review(self, path, before):
         """Abre `path` y entra en modo review con diff vs `before`."""
         tab = self.open_file(path)
-        if tab:
+        if tab and hasattr(tab, "editor"):
             tab.start_review(before)
             if path not in self._review_files:
                 self._review_files.append(path)

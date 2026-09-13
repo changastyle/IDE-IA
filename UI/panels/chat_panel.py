@@ -4,6 +4,8 @@
 Contiene:
 - Selector de provider + modelo
 - Vista de chat (streaming)
+- Tabs de conversación (ng-studio-stuff/conversaciones/conversacion-NNN/:
+  historial .json/.txt + adjuntos/ + audios/)
 - Input con Enter para enviar
 - Botones: enviar, pulir, detener
 - Checkbox "Sin contexto"
@@ -15,6 +17,7 @@ import json
 import time
 import html
 import shlex
+import shutil
 import subprocess
 import sys
 import difflib
@@ -29,7 +32,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QComboBox, QLineEdit, QCheckBox, QMessageBox,
     QFileDialog, QInputDialog, QSplitter, QFrame, QListWidget, QListWidgetItem,
     QScrollArea, QSizePolicy, QToolTip, QDialog, QProgressBar, QLayout,
-    QToolButton,
+    QToolButton, QTabBar,
 )
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,8 +43,10 @@ MAX_ITER = 10
 MAX_RESULT = 8000
 MAX_INDEX = 8000
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "conversaciones",
-             "ns-code"}
-NS_DIR = "ns-code"  # carpeta interna del workspace: contexto.txt, indexado.txt, resumen.txt, conversacion.json
+             "ns-code", "ng-studio-stuff"}
+NS_DIR = "ns-code"  # carpeta interna del workspace: contexto.txt, indexado.txt, resumen.txt
+STUFF_DIR = "ng-studio-stuff"   # carpeta interna nueva del workspace
+CONVS_SUBDIR = "conversaciones"  # → ng-studio-stuff/conversaciones/conversacion-NNN/
 
 CLOUD_PRESETS = [
     ("OpenCode Zen", "https://opencode.ai/zen/v1"),
@@ -1393,6 +1398,13 @@ class _DotNav(QWidget):
         self._current = idx
         self.update()
 
+    def clear(self):
+        """Vacía los puntitos (al cambiar de conversación)."""
+        self._prompts = []
+        self._hover = -1
+        self._current = -1
+        self.update()
+
     @staticmethod
     def _rel(when, long=False):
         """Hace cuánto: '3m'/'20m'/'1h' compacto o 'hace 3 min' largo."""
@@ -2057,6 +2069,8 @@ class ChatPanel(QWidget):
         self._rec_timer = None
         self._rec_wav = None
         self._file_block = {}  # path → PromptBlock que tiene su backup
+        self._conv_name = ""   # conversación activa (tab)
+        self._conv_dir = ""    # ng-studio-stuff/conversaciones/conversacion-NNN/
 
         # Providers y prefs desde QSettings
         self.settings = QSettings("ChatIA", "ChatIA")
@@ -2143,8 +2157,39 @@ class ChatPanel(QWidget):
         mid_row.setSpacing(2)
         self._dotnav = _DotNav()
         self._dotnav.jump.connect(self._jump_to_prompt)
-        mid_row.addWidget(self._dotnav)
-        mid_row.addWidget(self.chat_scroll, 1)
+        # ---- Tabs de conversaciones (ng-studio-stuff/conversaciones/) ----
+        tabs_row = QHBoxLayout()
+        tabs_row.setContentsMargins(0, 4, 0, 2)
+        tabs_row.setSpacing(4)
+        self.tab_bar = QTabBar()
+        self.tab_bar.setObjectName("convTabs")
+        self.tab_bar.setTabsClosable(True)
+        self.tab_bar.setExpanding(False)
+        self.tab_bar.setDrawBase(False)
+        self.tab_bar.setElideMode(Qt.ElideRight)
+        self.tab_bar.setUsesScrollButtons(True)
+        self.tab_bar.setStyleSheet(
+            "QTabBar::tab { background:#1a1d22; color:#9aa0aa;"
+            " border:1px solid #2a2d33; border-bottom:none;"
+            " border-top-left-radius:6px; border-top-right-radius:6px;"
+            " padding:3px 10px; font-size:10.5px; }"
+            "QTabBar::tab:selected { background:#22252b; color:#e8eaed;"
+            " border-color:#4a4e57; }"
+            "QTabBar::tab:!selected:hover { color:#c8ccd4; }")
+        self.tab_bar.currentChanged.connect(self._on_tab_changed)
+        self.tab_bar.tabCloseRequested.connect(self._close_tab)
+        tabs_row.addWidget(self.tab_bar, 1)
+        self.btn_new_conv = QPushButton("＋")
+        self.btn_new_conv.setFixedSize(24, 24)
+        self.btn_new_conv.setToolTip("Nueva conversación (tab)")
+        self.btn_new_conv.setCursor(Qt.PointingHandCursor)
+        self.btn_new_conv.setStyleSheet(
+            "QPushButton { background:transparent; color:#9aa0aa;"
+            " border:1px dashed #33363c; border-radius:6px; font-size:13px; }"
+            "QPushButton:hover { color:#e8eaed; border-color:#0a84ff; }")
+        self.btn_new_conv.clicked.connect(self._new_conv)
+        tabs_row.addWidget(self.btn_new_conv)
+        mid_l.addLayout(tabs_row)
         mid_l.addLayout(mid_row)
         self.v_split.addWidget(mid)
         # Estado de bloques
@@ -2254,11 +2299,173 @@ class ChatPanel(QWidget):
 
     def set_repo(self, path):
         """Cambia la carpeta de trabajo del chat."""
+        if self.tools and self.repo_path == (path or ""):
+            return  # mismo workspace: no recargar
+        if self.tools:
+            self._save_conversation()   # guarda la conv activa del root anterior
         self.repo_path = path or ""
         self.tools = Tools(path) if path else None
+        self._conv_name = ""
+        self._conv_dir = ""
         if self.tools:
             self._init_ns_code()
-            self._load_conversation()
+            self._load_conversations()
+
+    # ---- Conversaciones (ng-studio-stuff/conversaciones/) ----
+
+    def _convs_dir(self):
+        """Crea y devuelve <workspace>/ng-studio-stuff/conversaciones/."""
+        d = os.path.join(self.tools.root, STUFF_DIR, CONVS_SUBDIR)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _list_convs(self):
+        try:
+            d = self._convs_dir()
+            return sorted(n for n in os.listdir(d)
+                          if re.match(r"conversacion-\d+$", n)
+                          and os.path.isdir(os.path.join(d, n)))
+        except OSError:
+            return []
+
+    def _create_conv(self):
+        """Crea conversacion-NNN/ con sus subcarpetas. Devuelve el nombre."""
+        n = max((int(c.rsplit("-", 1)[1]) for c in self._list_convs()),
+                default=0) + 1
+        name = f"conversacion-{n:03d}"
+        d = os.path.join(self._convs_dir(), name)
+        try:
+            for sub in ("adjuntos", "audios"):
+                os.makedirs(os.path.join(d, sub), exist_ok=True)
+        except OSError:
+            pass
+        return name
+
+    def _add_tab(self, name, select=True):
+        bar = self.tab_bar
+        bar.blockSignals(True)
+        bar.addTab(f"Conv {int(name.rsplit('-', 1)[1])}")
+        bar.setTabData(bar.count() - 1, name)
+        bar.setTabToolTip(bar.count() - 1, name)
+        if select:
+            bar.setCurrentIndex(bar.count() - 1)
+        bar.blockSignals(False)
+
+    def _load_conversations(self):
+        """Escanea conversaciones/, arma los tabs y activa la última."""
+        convs = self._list_convs()
+        if not convs:
+            convs = [self._create_conv()]
+            # Migración única: la conversación vieja de ns-code/ pasa a la 001
+            old = os.path.join(self.tools.root, NS_DIR, "conversacion.json")
+            if os.path.isfile(old):
+                try:
+                    shutil.copy2(old, os.path.join(
+                        self._convs_dir(), convs[0], convs[0] + ".json"))
+                except OSError:
+                    pass
+        bar = self.tab_bar
+        bar.blockSignals(True)
+        while bar.count():
+            bar.removeTab(0)
+        for c in convs:
+            self._add_tab(c, select=False)
+        bar.setCurrentIndex(len(convs) - 1)
+        bar.blockSignals(False)
+        self._activate_conv(convs[-1])
+
+    def _activate_conv(self, name):
+        """Carga la conversación `name` en la vista (sin guardar la anterior)."""
+        self._clear_chat()
+        self._conv_name = name
+        self._conv_dir = os.path.join(self._convs_dir(), name)
+        self._load_conversation()
+
+    def _switch_conv(self, name):
+        """Cambio de tab: guarda la conversación actual y carga la elegida."""
+        if not name or name == self._conv_name:
+            return
+        if self.worker is not None and self.worker.isRunning():
+            self._add_standalone_message(
+                "Esperá a que termine la respuesta para cambiar de tab.", "error")
+            return
+        self._save_conversation()
+        self._activate_conv(name)
+
+    def _on_tab_changed(self, idx):
+        if idx >= 0:
+            self._switch_conv(self.tab_bar.tabData(idx))
+
+    def _new_conv(self):
+        """Botón ＋: nueva conversación (tab + carpeta en disco)."""
+        if not self.tools:
+            self._add_standalone_message(
+                "Seleccioná una carpeta de trabajo primero.", "error")
+            return
+        if self.worker is not None and self.worker.isRunning():
+            self._add_standalone_message(
+                "Esperá a que termine la respuesta para abrir otra conversación.",
+                "error")
+            return
+        self._save_conversation()
+        name = self._create_conv()
+        self._add_tab(name, select=True)
+        self._activate_conv(name)
+
+    def _close_tab(self, idx):
+        """× del tab: archiva la carpeta en ng-studio-stuff/trash/."""
+        name = self.tab_bar.tabData(idx)
+        if not name:
+            return
+        if (name == self._conv_name and self.worker is not None
+                and self.worker.isRunning()):
+            self._add_standalone_message(
+                "Esperá a que termine la respuesta para cerrarla.", "error")
+            return
+        r = QMessageBox.question(
+            self, "Cerrar conversación",
+            f"¿Archivar {name}? (se mueve a ng-studio-stuff/trash/)",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            return
+        was_active = name == self._conv_name
+        if was_active:
+            self._conv_name = ""
+            self._conv_dir = ""
+        try:
+            trash = os.path.join(self.tools.root, STUFF_DIR, "trash")
+            os.makedirs(trash, exist_ok=True)
+            shutil.move(os.path.join(self._convs_dir(), name),
+                        os.path.join(trash, f"{name}-{int(time.time())}"))
+        except OSError:
+            pass
+        bar = self.tab_bar
+        bar.blockSignals(True)
+        bar.removeTab(idx)
+        if was_active:
+            convs = self._list_convs()
+            if not convs:
+                convs = [self._create_conv()]
+                self._add_tab(convs[0], select=False)
+            bar.setCurrentIndex(bar.count() - 1)
+            bar.blockSignals(False)
+            self._activate_conv(convs[-1])
+        else:
+            bar.blockSignals(False)
+
+    def _clear_chat(self):
+        """Vacía la vista (bloques + puntitos) sin tocar el disco."""
+        while self.chat_layout.count() > 1:
+            it = self.chat_layout.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+        self._blocks = []
+        self._current_block = None
+        self._file_block = {}
+        self._prompt_counter = 0
+        self.history = []
+        self._dotnav.clear()
 
     # ---- Persistencia (ns-code/) ----
 
@@ -2281,13 +2488,30 @@ class ChatPanel(QWidget):
                     pass
 
     def _save_conversation(self):
-        """Guarda el historial en ns-code/conversacion.json."""
+        """Guarda la conversación activa: .json (estado) + .txt (transcript)
+        en ng-studio-stuff/conversaciones/conversacion-NNN/."""
         if not self.tools:
             return
+        if not self._conv_dir:
+            name = self._create_conv()
+            self._conv_name = name
+            self._conv_dir = os.path.join(self._convs_dir(), name)
+            self._add_tab(name)  # la carpeta fue recreada: que aparezca el tab
         try:
-            p = os.path.join(self._ns_dir(), "conversacion.json")
-            with open(p, "w", encoding="utf-8") as f:
+            base = self._conv_name
+            with open(os.path.join(self._conv_dir, base + ".json"),
+                      "w", encoding="utf-8") as f:
                 json.dump(self.history, f, ensure_ascii=False, indent=1)
+            lines = [f"# {base}", f"# workspace: {self.tools.root}", ""]
+            for m in self.history:
+                tag = {"user": "USER", "assistant": "IA"}.get(
+                    m.get("role"), str(m.get("role", "?")).upper())
+                lines.append(f"### [{tag}]")
+                lines.append(str(m.get("content", "")))
+                lines.append("")
+            with open(os.path.join(self._conv_dir, base + ".txt"),
+                      "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
         except OSError:
             pass
 
@@ -2371,8 +2595,11 @@ class ChatPanel(QWidget):
             pass
 
     def _load_conversation(self):
-        """Restaura historial desde ns-code/conversacion.json y reconstruye bloques."""
-        p = os.path.join(self.tools.root, NS_DIR, "conversacion.json")
+        """Restaura el historial de la conversación activa (conversacion-NNN.json)
+        y reconstruye los bloques."""
+        if not self._conv_dir:
+            return
+        p = os.path.join(self._conv_dir, self._conv_name + ".json")
         if not os.path.isfile(p):
             return
         try:
@@ -2387,11 +2614,9 @@ class ChatPanel(QWidget):
         folder_name = os.path.basename(self.tools.root) or "proyecto"
         n = 0
         cur = None
-        # Hora aproximada de la sesión previa: mtime del conversacion.json
+        # Hora aproximada de la sesión previa: mtime del json de la conversación
         try:
-            sess_dt = datetime.fromtimestamp(
-                os.path.getmtime(os.path.join(self._ns_dir(),
-                                              "conversacion.json")))
+            sess_dt = datetime.fromtimestamp(os.path.getmtime(p))
             sess_hm = sess_dt.strftime("%H:%M")
         except OSError:
             sess_dt = None
@@ -2431,22 +2656,6 @@ class ChatPanel(QWidget):
                         len(self._blocks) - 1,
                         u.get("prompt", 0), u.get("completion", 0))
         self._prompt_counter = n
-        if n:
-            self._show_restored_banner(n)
-
-    def _show_restored_banner(self, n):
-        """'📂 N prompts anteriores' en el header del panel contenedor."""
-        banner = QLabel(f"📂 {n} prompts anteriores")
-        banner.setStyleSheet(
-            "color:#8e8e93; font-size:11px; background:transparent; "
-            "border:none;")
-        banner.setToolTip("Conversación restaurada de la sesión anterior")
-        # Buscar el Panel contenedor (tiene .header)
-        p = self.parent()
-        while p is not None and not hasattr(p, "header"):
-            p = p.parent()
-        if p is not None:
-            p.header.add_widget(banner)
 
     def _jump_to_prompt(self, idx):
         """Clic en un punto del navigator → scroll al bloque + resaltar."""
@@ -2668,6 +2877,7 @@ class ChatPanel(QWidget):
         audio = self._rec_wav
         if not audio or not os.path.exists(audio):
             return
+        self._archive_audio(audio)
         # Mostrar animación de transcripción
         self._transcribe_seconds = 0
         self.lbl_transcribing.setText("🎙 Transcribiendo voz… 0s")
@@ -2693,6 +2903,18 @@ class ChatPanel(QWidget):
         self._voice_thread.done.connect(self._on_voice_done)
         self._voice_thread.error.connect(self._on_voice_error)
         self._voice_thread.start()
+
+    def _archive_audio(self, path):
+        """Copia la grabación del mic a <conversacion-NNN>/audios/audio-NNN.mp3."""
+        if not self._conv_dir:
+            return
+        try:
+            adir = os.path.join(self._conv_dir, "audios")
+            os.makedirs(adir, exist_ok=True)
+            n = len([f for f in os.listdir(adir) if f.endswith(".mp3")]) + 1
+            shutil.copy2(path, os.path.join(adir, f"audio-{n:03d}.mp3"))
+        except OSError:
+            pass
 
     def _on_transcribe_tick(self):
         """Cuenta los segundos que tarda la transcripción."""

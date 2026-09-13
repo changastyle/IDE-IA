@@ -11,3 +11,4 @@
 /private/var/folders/jj/x2_mf0ss3gvgsrsxm74btx500000gn/T/tmpg7p2jzqp	main	1789302918	#ae59ea
 /Users/nico/Desktop/sub-carpeta-for-test	main	1789311214	#ead859
 /Users/nico/Desktop/sub-carpeta-for-test	DEV	1789311214	#59d2ea
+/Users/nico/Desktop/sub-carpeta-for-test	pulga	1789311214	#ea59a7
