@@ -32,9 +32,12 @@ def is_repo(path):
 
 
 def get_current_branch(path):
-    """Rama actual o '' si detached/no repo."""
+    """Rama actual (incl. unborn tras `git init`) o '' si detached/no repo."""
+    ok, out = _run(path, "symbolic-ref", "--short", "HEAD")
+    if ok and out:
+        return out
     ok, out = _run(path, "rev-parse", "--abbrev-ref", "HEAD")
-    return out if ok else ""
+    return out if ok and out != "HEAD" else ""
 
 
 def list_branches(path):

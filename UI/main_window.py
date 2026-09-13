@@ -618,15 +618,27 @@ class TerminalTab(QWidget):
             return
         text = _ANSI_RE.sub("", data.decode("utf-8", "replace"))
         if self._screen is not None:
-            self._stream.feed(data)
-            self._render()
+            try:
+                self._stream.feed(data)
+                self._render()
+            except Exception as ex:
+                # nunca romper el loop de la terminal: va al hook global
+                # (loguea a crash.log, status bar, y no repite el spam)
+                sys.excepthook(type(ex), ex, ex.__traceback__)
         else:
             self.out.appendPlainText(text.rstrip())
         self.text_received.emit("")
 
     @staticmethod
     def _dict_line(d, cols):
-        return "".join(d.get(x, " ").data for x in range(cols)).rstrip()
+        out = []
+        for x in range(cols):
+            c = d.get(x)
+            if c is None:
+                out.append(" ")
+            else:
+                out.append(getattr(c, "data", str(c)))
+        return "".join(out).rstrip()
 
     def _render(self):
         """Vuelca scrollback + pantalla de pyte al widget."""
@@ -863,27 +875,32 @@ def _initials(name):
 
 
 class _ProjectRow(QWidget):
-    """Fila del menú de proyectos: badge con iniciales + nombre + path."""
+    """Fila del menú de proyectos: badge + nombre (+ padre si se repite)
+    + path + ✕ para quitarla de la lista."""
     clicked = Signal()
+    removed = Signal()
 
-    def __init__(self, path, current=False, parent=None):
+    def __init__(self, path, current=False, suffix="", parent=None):
         super().__init__(parent)
         self.setObjectName("projRow")
         self.setAttribute(Qt.WA_StyledBackground)  # que pinte el :hover
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumWidth(320)
-        name = os.path.basename(path.rstrip("/")) or path
+        base = os.path.basename(path.rstrip("/")) or path
+        # si el nombre se repite en la lista, se muestra con la carpeta
+        # padre: "sub-carpeta-for-test — NG-STUDIO"
+        name = f"{base} — {suffix}" if suffix else base
         disp = path.replace(os.path.expanduser("~"), "~")
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 5, 12, 5)
         lay.setSpacing(10)
 
-        badge = QLabel(_initials(name))
+        badge = QLabel(_initials(base))
         badge.setFixedSize(26, 26)
         badge.setAlignment(Qt.AlignCenter)
         color = _BADGE_COLORS[
-            zlib.crc32(name.encode()) % len(_BADGE_COLORS)]
+            zlib.crc32(base.encode()) % len(_BADGE_COLORS)]
         badge.setStyleSheet(
             f"background:{color}; color:#fff; border-radius:6px;"
             "font-weight:bold; font-size:11px;")
@@ -904,6 +921,17 @@ class _ProjectRow(QWidget):
             dot = QLabel("●")
             dot.setObjectName("projRowDot")
             lay.addWidget(dot)
+
+        btn_x = QPushButton("✕")
+        btn_x.setFixedSize(18, 18)
+        btn_x.setCursor(Qt.PointingHandCursor)
+        btn_x.setToolTip("Quitar de la lista")
+        btn_x.setStyleSheet(
+            "QPushButton{background:transparent; border:none; color:#6b7078;"
+            "font-size:11px; border-radius:5px;}"
+            "QPushButton:hover{background:#4a2c2c; color:#e05561;}")
+        btn_x.clicked.connect(self.removed.emit)
+        lay.addWidget(btn_x)
 
         # Las labels no capturan mouse: la fila entera es clicable/hover
         for w in self.findChildren(QLabel):
@@ -975,12 +1003,11 @@ class TopBar(QFrame):
         h.setSpacing(8)
 
         # Proyecto actual (botón único con dropdown integrado)
-        self.btn_folder = QPushButton("Sin carpeta")
+        self.btn_folder = QPushButton("Sin carpeta  ▾")
         self.btn_folder.setObjectName("tbFolder")
         self.btn_folder.setCursor(Qt.PointingHandCursor)
         self.btn_folder.setToolTip("Proyecto — clic para cambiar o clonar")
         self.btn_folder.clicked.connect(self._show_folder_menu)
-        _chevron_right(self.btn_folder)
         h.addWidget(self.btn_folder)
 
         h.addSpacing(10)
@@ -1117,12 +1144,13 @@ class TopBar(QFrame):
     # ---- carpeta ----
     def set_folder(self, path):
         from utils.recents import add_recent
-        self.repo_path = path or ""
-        name = os.path.basename(path) if path else "Sin carpeta"
-        self.btn_folder.setText(name)
+        # normalizar: una "/" final dejaba basename()="" y el botón sin nombre
+        self.repo_path = os.path.normpath(path) if path else ""
+        name = os.path.basename(self.repo_path) if self.repo_path else "Sin carpeta"
+        self.btn_folder.setText(f"{name}  ▾")
         self._refresh_git()
-        if path:
-            add_recent(path)
+        if self.repo_path:
+            add_recent(self.repo_path)
         self.load_run_configs()
 
     def _show_folder_menu(self):
@@ -1155,6 +1183,19 @@ class TopBar(QFrame):
         sessions = load_sessions()
         recents = [p for p in load_recents() if p not in sessions]
 
+        # nombres repetidos → mostrar la carpeta padre para distinguirlas
+        all_paths = sessions + recents
+        counts = {}
+        for p in all_paths:
+            n = os.path.basename(p.rstrip("/")) or p
+            counts[n] = counts.get(n, 0) + 1
+
+        def _suffix(p):
+            n = os.path.basename(p.rstrip("/")) or p
+            if counts.get(n, 0) <= 1:
+                return ""
+            return os.path.basename(os.path.dirname(p.rstrip("/"))) or ""
+
         def _header(text):
             menu.addSeparator()
             h = menu.addAction(text)
@@ -1162,10 +1203,12 @@ class TopBar(QFrame):
 
         def _row(p):
             act = QWidgetAction(menu)
-            row = _ProjectRow(p, current=(p == cur))
+            row = _ProjectRow(p, current=(p == cur), suffix=_suffix(p))
             row.setToolTip(p)
             row.clicked.connect(
                 lambda pp=p: (menu.close(), self._select_folder(pp)))
+            row.removed.connect(
+                lambda pp=p, a=act: self._remove_project(menu, a, pp))
             act.setDefaultWidget(row)
             menu.addAction(act)
 
@@ -1180,19 +1223,30 @@ class TopBar(QFrame):
 
         return menu
 
+    def _remove_project(self, menu, act, path):
+        """✕ de una fila: quita la carpeta de recientes y sesiones."""
+        from utils.recents import remove_recent
+        from utils.sessions import remove_session
+        remove_recent(path)
+        remove_session(path)
+        menu.removeAction(act)
+
     def _select_folder(self, path):
         self.set_folder(path)
-        self.folder_changed.emit(path)
+        self.folder_changed.emit(self.repo_path)  # ya normalizado
 
     def _pick_folder(self):
-        d = QFileDialog.getExistingDirectory(self, "Elegir carpeta de trabajo")
+        d = QFileDialog.getExistingDirectory(
+            self, "Elegir carpeta de trabajo",
+            os.path.expanduser("~/Desktop"))
         if d:
             self._select_folder(d)
 
     def _new_project(self):
         # El diálogo nativo de macOS permite crear la carpeta ahí mismo
         d = QFileDialog.getExistingDirectory(
-            self, "New Project — elegir o crear carpeta")
+            self, "New Project — elegir o crear carpeta",
+            os.path.expanduser("~/Desktop"))
         if d:
             self._select_folder(d)
 
@@ -1282,7 +1336,7 @@ class TopBar(QFrame):
                 self.btn_branch.setStyleSheet(
                     f"QPushButton{{background:{color}; color:#fff;"
                     "border-radius:12px; padding:5px 12px;"
-                    "font-weight:bold;}}"
+                    "font-weight:bold;}"
                     f"QPushButton:hover{{background:{color};}}")
                 chev = os.path.join(ICONOS_DIR, "flecha_abajo_w.svg")
                 if os.path.exists(chev):
@@ -1292,28 +1346,30 @@ class TopBar(QFrame):
                 if os.path.exists(CHEVRON_SVG):
                     self.btn_branch.setIcon(QIcon(CHEVRON_SVG))
         else:
-            self.btn_branch.setText("⎇ —")
-            self.btn_branch.setEnabled(False)
-            self.btn_branch.setStyleSheet("")
-            if os.path.exists(CHEVRON_SVG):
-                self.btn_branch.setIcon(QIcon(CHEVRON_SVG))
+            # No es repo → el botón de rama pasa a ser "git init"
+            self.btn_branch.setText("⎇  Initialize Git Project")
+            self.btn_branch.setEnabled(True)
+            self.btn_branch.setStyleSheet(
+                "QPushButton{background:#2a2d33; color:#e8eaed;"
+                "border-radius:12px; padding:5px 12px; font-weight:bold;}"
+                "QPushButton:hover{background:#33373e;}")
+            self.btn_branch.setIcon(QIcon())
 
     def _show_branch_menu(self):
         if not self.repo_path:
             return
+        if not is_repo(self.repo_path):
+            # el botón actúa como "git init" cuando no hay repo
+            ok, out = GitUtils(self.repo_path).init()
+            win = self.window()
+            if hasattr(win, "statusBar"):
+                win.statusBar().showMessage(
+                    ("✔ " if ok else "✖ ") + (out or "git init")[:100], 5000)
+            if ok:
+                self.folder_changed.emit(self.repo_path)  # refrescar paneles
+            return
         menu = QMenu(self)
         menu.setObjectName("branchMenu")
-        # Acciones git
-        a_upd = QAction("↙  Update Project (pull)", menu)
-        a_upd.triggered.connect(lambda: self.git_action.emit("pull"))
-        menu.addAction(a_upd)
-        a_com = QAction("●  Commit…", menu)
-        a_com.triggered.connect(lambda: self.git_action.emit("commit"))
-        menu.addAction(a_com)
-        a_psh = QAction("↗  Push…", menu)
-        a_psh.triggered.connect(lambda: self.git_action.emit("push"))
-        menu.addAction(a_psh)
-        menu.addSeparator()
         a_new = QAction("＋  New Branch…", menu)
         a_new.triggered.connect(self._new_branch)
         menu.addAction(a_new)
@@ -1724,6 +1780,12 @@ class MainBody(QWidget):
         self._add_chat_header_ctrls(pc, self.chat_panel)
         self.left_zone.toggle("chat", False)
 
+        # Panel Planner (workflows con agentes IA) en zona izquierda
+        from UI.panels.planner_panel import PlannerPanel
+        self.planner_panel = PlannerPanel()
+        self.left_zone.add_panel_widget("planner", "Planner", self.planner_panel)
+        self.left_zone.toggle("planner", False)
+
         # Panel de Git (ramas + grafo) en zona izquierda
         from UI.panels.git_panel import GitPanel
         self.git_panel = GitPanel()
@@ -1733,6 +1795,16 @@ class MainBody(QWidget):
         self.git_panel.branch_changed.connect(self._on_branch_changed)
         # El stash movió algo → refrescar grafo y lista de cambios
         self.stash_panel.stash_changed.connect(self.git_panel.refresh)
+
+        # ---- Listener central del repo (listeners/git_listener.py) ----
+        # Vigila la carpeta + .git y avisa a los componentes suscriptos
+        # cuando cambia el status o la rama (incl. cambios externos).
+        from listeners import GitListener
+        self.git_listener = GitListener(self)
+        for comp in (self.changes_panel.refresh,
+                     self.git_panel.refresh,
+                     self.stash_panel.refresh):
+            self.git_listener.subscribe(comp)
 
         # Panel de archivos en zona derecha (independiente, oculto al inicio)
         self.files_panel_right = FilesPanel()
@@ -1759,6 +1831,12 @@ class MainBody(QWidget):
             "chat", "Chat IA", self.chat_panel_right)
         self._add_chat_header_ctrls(pcr, self.chat_panel_right)
         self.right_zone.toggle("chat", False)
+
+        # Panel Planner en zona derecha
+        self.planner_panel_right = PlannerPanel()
+        self.right_zone.add_panel_widget(
+            "planner", "Planner", self.planner_panel_right)
+        self.right_zone.toggle("planner", False)
 
         # Terminal flotante (con pestañas)
         self.terminal = TerminalOverlay(self)
@@ -2063,6 +2141,8 @@ class MainBody(QWidget):
         self.git_panel.set_repo(path)
         self.changes_panel.set_repo(path)
         self.stash_panel.set_repo(path)
+        if hasattr(self, "git_listener"):
+            self.git_listener.set_repo(path)
 
 
 class UIMainWindow(QMainWindow):
@@ -2095,15 +2175,18 @@ class UIMainWindow(QMainWindow):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         _ia_icon = os.path.join(ICONOS_DIR, "ia.svg")
+        _folder_icon = os.path.join(ICONOS_DIR, "carpeta_w.svg")
         self.hotbar_left = HotBar(
             side="left",
             buttons=(
-                ("files", "📁", "Panel de archivos", None),
+                ("files", "", "Panel de archivos", _folder_icon),
                 ("p1", "", "Changes — commit",
                  os.path.join(ICONOS_DIR, "commit.svg")),
                 ("p2", "", "Stash — el bolsillo",
                  os.path.join(ICONOS_DIR, "stash.svg")),
-                ("chat", "4", "Panel 4 — Chat IA (izq)", _ia_icon),
+                ("chat", "IA", "Panel 4 — Chat IA (izq)", _ia_icon),
+                ("planner", "", "Planner — workflows con agentes IA",
+                 os.path.join(ICONOS_DIR, "planner.svg")),
                 ("git", "", "Ramas git — pull/push/checkout",
                  os.path.join(ICONOS_DIR, "git_branch.svg")),
                 ("term", "", "Terminal (pestañas)",
@@ -2114,10 +2197,12 @@ class UIMainWindow(QMainWindow):
         self.hotbar_right = HotBar(
             side="right",
             buttons=(
-                ("files", "📁", "Panel de archivos", None),
+                ("files", "", "Panel de archivos", _folder_icon),
                 ("p1", "2", "Panel 2 (der)", None),
                 ("p2", "3", "Panel 3 (der)", None),
                 ("chat", "4", "Panel 4 — Chat IA (der)", _ia_icon),
+                ("planner", "5", "Planner (der)",
+                 os.path.join(ICONOS_DIR, "planner.svg")),
                 ("term", "⌨", "Terminal (flotante)", None),
             ),
             checked=set())
@@ -2138,6 +2223,8 @@ class UIMainWindow(QMainWindow):
             lambda on: self.body.left_zone.toggle("p2", on))
         self.hotbar_left.btns["chat"].toggled.connect(
             lambda on: self.body.left_zone.toggle("chat", on))
+        self.hotbar_left.btns["planner"].toggled.connect(
+            lambda on: self.body.left_zone.toggle("planner", on))
         self.hotbar_left.btns["term"].toggled.connect(
             lambda on: self.body.toggle_terminal(on))
         # Git de la hotbar → panel de Git (ramas + grafo)
@@ -2156,6 +2243,8 @@ class UIMainWindow(QMainWindow):
             lambda on: (self.body.right_zone.toggle("chat", on),
                         QTimer.singleShot(0, self.body.ensure_right_chat_width)
                         if on else None))
+        self.hotbar_right.btns["planner"].toggled.connect(
+            lambda on: self.body.right_zone.toggle("planner", on))
         self.hotbar_right.btns["term"].toggled.connect(
             lambda on: self.body.toggle_terminal(on))
         # Top bar → acciones
@@ -2166,23 +2255,29 @@ class UIMainWindow(QMainWindow):
         self.top_bar.stop_requested.connect(self._on_stop_requested)
         # Checkout rechazado desde el panel de Git → popup de stash
         self.body.git_panel.checkout_failed.connect(self._on_checkout_failed)
+        # El listener central avisa si cambia la rama (incl. externo) →
+        # actualizar la píldora de la top bar
+        self.body.git_listener.branch_changed.connect(
+            lambda _b: self.top_bar._refresh_git())
         self.top_bar.edit_configs_requested.connect(self._open_run_configs)
         self.top_bar.open_new_window.connect(self._open_new_window)
         self.top_bar.settings_requested.connect(self._show_settings_menu)
         # Panel de archivos sigue a la carpeta de la top bar
         self.body.files_panel.file_activated.connect(self._on_file_activated)
         self.body.files_panel_right.file_activated.connect(self._on_file_activated)
-        # Restaurar última carpeta abierta (o ~/Desktop si no hay)
-        from utils.sessions import last_session, add_session
+        # Restaurar última carpeta usada (de recents; o ~/Desktop si no hay)
+        from utils.sessions import add_session
+        from utils.recents import load_recents
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        start_dir = last_session() or (
-            desktop if os.path.isdir(desktop) else os.path.expanduser("~"))
+        recents = load_recents()
+        start_dir = (recents[0] if recents else
+                     desktop if os.path.isdir(desktop)
+                     else os.path.expanduser("~"))
         self.top_bar.set_folder(start_dir)
         self.body.set_root(start_dir)
         add_session(start_dir)
-        # Guardar sesión al cerrar + matar shells de la terminal
+        # Matar shells de la terminal al cerrar
         app = QApplication.instance()
-        app.aboutToQuit.connect(self._save_session)
         app.aboutToQuit.connect(self.body.terminal.kill_all)
 
     # ---- navegación atrás/adelante ----
@@ -2217,11 +2312,16 @@ class UIMainWindow(QMainWindow):
         add_session(path)
         self.statusBar().showMessage(f"Carpeta: {path}", 3000)
 
-    def _save_session(self):
-        """Guarda la carpeta actual al cerrar la app."""
-        from utils.sessions import add_session
+    def closeEvent(self, e):
+        """Al cerrar esta ventana su carpeta deja de ser 'Open Project'.
+
+        (Las sesiones listan solo instancias vivas; la carpeta queda en
+        recents para restaurarla al próximo arranque.)
+        """
+        from utils.sessions import remove_session
         if self.top_bar.repo_path:
-            add_session(self.top_bar.repo_path)
+            remove_session(self.top_bar.repo_path)
+        super().closeEvent(e)
 
     def _open_new_window(self, path):
         """Abre una nueva instancia del IDE en otra carpeta."""
@@ -2384,7 +2484,41 @@ class UIMainWindow(QMainWindow):
         self.statusBar().showMessage("⏹ Detenido", 3000)
 
 
+_SEEN_ERRORS = set()
+
+
+def _excepthook(exc_type, exc, tb):
+    """Red de seguridad global: ninguna excepción suelta puede crashear
+    ni spammear la app — se loguea a ng-studio/crash.log, se muestra en
+    la status bar, y el mismo error solo se imprime una vez."""
+    import traceback
+    try:
+        log = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "ng-studio", "crash.log")
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        with open(log, "a", encoding="utf-8") as f:
+            f.write("".join(traceback.format_exception(exc_type, exc, tb))
+                    + "\n")
+    except OSError:
+        pass
+    last = traceback.extract_tb(tb)[-1] if tb else None
+    key = (exc_type.__name__, str(exc)[:120],
+           (last.filename, last.lineno) if last else None)
+    if key in _SEEN_ERRORS:
+        return                      # mismo error repetido → silencio
+    _SEEN_ERRORS.add(key)
+    sys.__excepthook__(exc_type, exc, tb)   # una vez a consola (debug)
+    try:
+        w = QApplication.activeWindow()
+        if w is not None and hasattr(w, "statusBar"):
+            w.statusBar().showMessage(
+                f"⚠ {exc_type.__name__}: {exc}", 8000)
+    except Exception:
+        pass
+
+
 def main():
+    sys.excepthook = _excepthook
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLE)
     # Icono de la app

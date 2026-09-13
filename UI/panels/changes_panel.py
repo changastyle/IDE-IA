@@ -8,7 +8,7 @@
 """
 import os
 
-from PySide6.QtCore import Qt, Signal, QSize, QTimer, QFileSystemWatcher
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
@@ -181,16 +181,8 @@ class ChangesPanel(QWidget):
         self._files = []          # [{path, tracked, state, lines, total}]
         self._rows = {}           # path → _FileRow
         self._groups = {}
-        self._last_status = None
-
-        # Auto-refresco: watcher del repo + poll del status (el watcher no
-        # es recursivo; el poll cada 2.5s cubre subcarpetas).
-        self._watcher = QFileSystemWatcher(self)
-        self._watcher.directoryChanged.connect(self._poll_status)
-        self._watcher.fileChanged.connect(self._poll_status)
-        self._poll_timer = QTimer(self)
-        self._poll_timer.timeout.connect(self._poll_status)
-        self._poll_timer.start(2500)
+        # El auto-refresco lo maneja listeners.GitListener (watcher + poll
+        # central que avisa a todos los componentes suscriptos).
 
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -308,39 +300,19 @@ class ChangesPanel(QWidget):
     def set_repo(self, path):
         self.repo = path or ""
         self.utils = GitUtils(self.repo) if self.repo else None
-        self._last_status = None
-        # vigilar la raíz del repo + el index/HEAD de git
-        dirs = self._watcher.directories()
-        files = self._watcher.files()
-        if dirs:
-            self._watcher.removePaths(dirs)
-        if files:
-            self._watcher.removePaths(files)
-        if self.repo:
-            # vigilar la RAÍZ del repo (no la subcarpeta del workspace)
-            root = self.utils.repo if self.utils else self.repo
-            paths = [root]
-            gitdir = os.path.join(root, ".git")
-            for f in ("index", "HEAD"):
-                p = os.path.join(gitdir, f)
-                if os.path.exists(p):
-                    paths.append(p)
-            self._watcher.addPaths(paths)
         self.refresh()
-
-    def _poll_status(self):
-        """Refresca solo si el `git status` cambió desde la última vez."""
-        if not self.utils or not self.utils.is_repo():
-            return
-        out = self.utils._git("status", "--porcelain", "-uall")
-        if out != self._last_status:
-            self.refresh()
 
     def showEvent(self, e):
         # al abrir el panel, refrescar de una
-        self._last_status = None
-        self._poll_status()
+        self.refresh()
         super().showEvent(e)
+
+    def _git_init(self):
+        """Botón 'Create git project': git init + rearmar el watcher."""
+        ok, out = self.utils.init()
+        self._status(("✔ " if ok else "✖ ") + (out or "git init")[:100])
+        if ok:
+            self.set_repo(self.repo)   # ahora existe .git → watcher + refresh
 
     # ---- construcción de la lista ----
     def refresh(self):
@@ -352,16 +324,32 @@ class ChangesPanel(QWidget):
         self._rows.clear()
         self._groups.clear()
         if not self.utils or not self.utils.is_repo():
-            self._last_status = None
-            empty = QLabel("No es un repo git")
-            empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet("color:#666; padding:20px;")
+            empty = QWidget()
+            ev = QVBoxLayout(empty)
+            ev.setSpacing(10)
+            ev.addStretch(1)
+            lbl = QLabel("No es un repo git")
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet(
+                "color:#666; font-size:13px; background:transparent;")
+            ev.addWidget(lbl)
+            if self.repo:
+                btn = QPushButton("⎇  Initialize Git Project")
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.setToolTip(f"git init en {self.repo}")
+                btn.setStyleSheet(
+                    "QPushButton{background:#3574f0; color:#fff; border:none;"
+                    "border-radius:8px; padding:7px 18px; font-size:12px;"
+                    "font-weight:bold;}"
+                    "QPushButton:hover{background:#4a86f8;}")
+                btn.clicked.connect(self._git_init)
+                ev.addWidget(btn, alignment=Qt.AlignCenter)
+            ev.addStretch(1)
             self.list_lay.addWidget(empty)
             self._refresh_history()
             return
 
         changed, untracked = self.utils.status()
-        self._last_status = self.utils._git("status", "--porcelain", "-uall")
         prev = {f["path"]: f for f in self._files}
         self._files = []
         for group, paths, tracked in (

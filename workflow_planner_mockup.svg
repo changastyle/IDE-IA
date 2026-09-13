@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="920" viewBox="0 0 1560 920" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+  <title>AI Autonomous Workflow Planner — Mockup UI</title>
+
+  <style>
+    text { font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
+    .mono { font-family:Menlo,'SF Mono',Consolas,monospace; }
+    .card:hover .cardbg { stroke:#0a84ff; filter:drop-shadow(0 4px 14px rgba(0,0,0,0.45)); }
+    .btnp { cursor:pointer; }
+    .btnp:hover { fill:#2f95ff; }
+    .ibtn { cursor:pointer; }
+    .ibtn:hover { fill:#34383f; }
+    .chip { cursor:pointer; }
+    .chip:hover { stroke:#4a4e57; }
+    .trow { cursor:pointer; }
+    .trow:hover { fill:rgba(255,255,255,0.045); }
+    .mrow { cursor:pointer; }
+    .mrow:hover { fill:rgba(255,255,255,0.045); }
+    .addlane { cursor:pointer; }
+    .addlane:hover { stroke:#0a84ff; }
+    .addlane text { fill:#9aa0aa; }
+    .addlane:hover text { fill:#e8eaed; }
+    .addlane:hover .plus { color:#0a84ff; }
+  </style>
+
+  <defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="4" height="14" rx="1.2" fill="currentColor"/><rect x="13.5" y="5" width="4" height="14" rx="1.2" fill="currentColor"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></g></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></g></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5h7l4.5 4.5v12.5h-11.5z"/><path d="M13.5 3.5V8H18"/><path d="M9.5 12.5h5.5M9.5 16h5.5"/></g></symbol>
+    <symbol id="i-img" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.7"/><path d="M4.5 17.5l5-5 4 4 3-3 3 3"/></g></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-chevd" viewBox="0 0 24 24"><path d="M6.5 9.5l5.5 5.5 5.5-5.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-bot" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="8.5" width="15" height="10.5" rx="3"/><path d="M12 8.5V5.5"/><circle cx="12" cy="4" r="1.4"/><circle cx="9" cy="13.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="13.5" r="1.2" fill="currentColor" stroke="none"/><path d="M9.5 16.5h5"/></g></symbol>
+    <marker id="arr-gray" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="#4a4e57"/></marker>
+    <marker id="arr-red" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="#ff453a"/></marker>
+  </defs>
+
+  <!-- ======== FONDO ======== -->
+  <rect width="1560" height="920" fill="#16181c"/>
+
+  <!-- ======== TOP BAR ======== -->
+  <rect x="0" y="0" width="1560" height="56" fill="#1e2126"/>
+  <line x1="0" y1="56" x2="1560" y2="56" stroke="#2a2d33"/>
+  <use href="#i-bot" x="24" y="14" width="28" height="28" style="color:#0a84ff"/>
+  <text x="62" y="34" font-size="15" font-weight="bold" fill="#e8eaed">AI Autonomous Workflow Planner</text>
+  <rect x="1150" y="16" width="170" height="24" rx="12" fill="#16181c" stroke="#2a2d33"/>
+  <circle cx="1166" cy="28" r="3.5" fill="#7ce495"/>
+  <text x="1176" y="31.5" font-size="11" fill="#9aa0aa">1 carril en ejecución</text>
+  <rect x="1336" y="16" width="204" height="24" rx="12" fill="#16181c" stroke="#2a2d33"/>
+  <use href="#i-clock" x="1348" y="20" width="16" height="16" style="color:#9aa0aa"/>
+  <text x="1372" y="31.5" font-size="10.5" class="mono" fill="#9aa0aa">Próxima corrida 02:00</text>
+
+  <!-- ======== CARRIL 1: header ======== -->
+  <rect x="24" y="72" width="1512" height="44" rx="10" fill="#1e2126" stroke="#2a2d33"/>
+  <circle cx="44" cy="94" r="4" fill="#7ce495"/>
+  <text x="56" y="98.5" font-size="13" font-weight="bold" fill="#e8eaed"><tspan fill="#6b7280">CARRIL 1 · </tspan>Refactor UI Tailwind</text>
+  <rect class="chip" x="290" y="83" width="140" height="22" rx="11" fill="#16181c" stroke="#2a2d33"/>
+  <use href="#i-clock" x="299" y="87" width="13" height="13" style="color:#9aa0aa"/>
+  <text x="318" y="97.5" font-size="10" class="mono" fill="#9aa0aa">Cron 02:00 AM</text>
+  <text x="460" y="98" font-size="11" fill="#9aa0aa">2/4 pasos OK</text>
+  <rect x="548" y="89" width="90" height="8" rx="4" fill="#2a2d33"/>
+  <rect x="548" y="89" width="45" height="8" rx="4" fill="#7ce495"/>
+  <g class="ibtn"><rect x="1290" y="80" width="28" height="28" rx="6" fill="#26292f"/><title>Play</title><use href="#i-play" x="1297" y="87" width="14" height="14" style="color:#7ce495"/></g>
+  <g class="ibtn"><rect x="1326" y="80" width="28" height="28" rx="6" fill="#26292f"/><title>Pausa</title><use href="#i-pause" x="1333" y="87" width="14" height="14" style="color:#c8ccd4"/></g>
+  <g class="ibtn"><rect x="1362" y="80" width="28" height="28" rx="6" fill="#26292f"/><title>Configuración</title><use href="#i-gear" x="1369" y="87" width="14" height="14" style="color:#c8ccd4"/></g>
+  <g class="btnp"><rect x="1398" y="80" width="124" height="28" rx="6" fill="#0a84ff"/><title>Ejecutar todo</title><use href="#i-play" x="1408" y="87" width="13" height="13" style="color:#ffffff"/><text x="1426" y="98" font-size="11" font-weight="bold" fill="#ffffff">Ejecutar todo</text></g>
+
+  <!-- ======== CARRIL 1: flechas del pipeline ======== -->
+  <line x1="366" y1="150" x2="406" y2="150" stroke="#4a4e57" stroke-width="2" marker-end="url(#arr-gray)"/>
+  <line x1="756" y1="150" x2="796" y2="150" stroke="#ff453a" stroke-width="2" opacity="0.75" marker-end="url(#arr-red)"/>
+  <line x1="1146" y1="150" x2="1186" y2="150" stroke="#4a4e57" stroke-width="2" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arr-gray)"/>
+
+  <!-- ======== TARJETA 1: Análisis previo (OK) ======== -->
+  <g class="card" transform="translate(24,128)">
+    <rect class="cardbg" width="340" height="486" rx="10" fill="#22252b" stroke="#33363c"/>
+    <circle cx="26" cy="22" r="11" fill="#1a1d22" stroke="#4a4e57"/>
+    <text x="26" y="26" text-anchor="middle" font-size="11" font-weight="bold" fill="#e8eaed">1</text>
+    <text x="46" y="26.5" font-size="12.5" font-weight="bold" fill="#e8eaed">Análisis previo</text>
+    <rect x="272" y="12" width="54" height="20" rx="10" fill="rgba(124,228,149,0.12)" stroke="rgba(124,228,149,0.35)"/>
+    <use href="#i-check" x="280" y="17" width="10" height="10" style="color:#7ce495"/>
+    <text x="294" y="25.5" font-size="9.5" font-weight="bold" fill="#7ce495">OK</text>
+    <line x1="0" y1="44" x2="340" y2="44" stroke="#2a2d33"/>
+    <text x="14" y="68" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">MATERIAL EXTRA</text>
+    <g class="chip"><rect x="14" y="78" width="110" height="22" rx="6" fill="#1a1d22" stroke="#2a2d33"/><use href="#i-doc" x="22" y="83" width="12" height="12" style="color:#9aa0aa"/><text x="40" y="92.5" font-size="10" class="mono" fill="#b6bac1">schema.json</text></g>
+    <g class="chip"><rect x="14" y="106" width="110" height="22" rx="6" fill="#1a1d22" stroke="#2a2d33"/><use href="#i-img" x="22" y="111" width="12" height="12" style="color:#9aa0aa"/><text x="40" y="120.5" font-size="10" class="mono" fill="#b6bac1">captura.png</text></g>
+    <text x="14" y="152" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">HISTORIAL DE CONVERSACIÓN</text>
+    <rect x="8" y="162" width="324" height="140" rx="8" fill="#1a1d22" stroke="#2a2d33"/>
+    <rect x="8" y="162" width="324" height="24" rx="8" fill="rgba(124,228,149,0.08)"/>
+    <rect x="8" y="178" width="324" height="12" fill="rgba(124,228,149,0.08)"/>
+    <use href="#i-check" x="18" y="167" width="12" height="12" style="color:#7ce495"/>
+    <text x="34" y="177.5" font-size="9" font-weight="bold" letter-spacing="0.5" fill="#7ce495">CONCLUSIÓN ACEPTADA</text>
+    <line x1="8" y1="186" x2="332" y2="186" stroke="#2a2d33"/>
+    <g class="mrow"><rect x="10" y="192" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="203" r="3" fill="#eab308"/><text x="36" y="206.5" font-size="11" fill="#c8ccd4">Prompt maestro del refactor</text></g>
+    <g class="mrow"><rect x="10" y="216" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="227" r="3" fill="#0a84ff"/><text x="36" y="230.5" font-size="11" fill="#c8ccd4">Plan de acción en 4 pasos</text></g>
+    <g class="mrow"><rect x="10" y="240" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="251" r="3" fill="#0a84ff"/><text x="36" y="254.5" font-size="11" fill="#c8ccd4">schema.json leído: 14 endpoints</text></g>
+    <use href="#i-chevd" x="18" y="277" width="11" height="11" style="color:#0a84ff"/>
+    <text x="34" y="286" font-size="10" fill="#0a84ff">Ver conversación completa (12)</text>
+    <text x="14" y="326" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">TESTS PROPUESTOS</text>
+    <rect x="8" y="336" width="324" height="132" rx="8" fill="#1a1d22" stroke="#2a2d33"/>
+    <g class="trow"><rect x="9" y="337" width="322" height="42" rx="6" fill="transparent"/><use href="#i-check" x="20" y="351" width="14" height="14" style="color:#7ce495"/><text x="44" y="362.5" font-size="11" class="mono" fill="#c8ccd4">render_basico</text><rect x="264" y="351" width="52" height="16" rx="4" fill="rgba(124,228,149,0.12)"/><text x="290" y="362.5" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#7ce495">PASS</text></g>
+    <line x1="9" y1="380" x2="331" y2="380" stroke="#23262c"/>
+    <g class="trow"><rect x="9" y="381" width="322" height="42" rx="6" fill="transparent"/><use href="#i-check" x="20" y="395" width="14" height="14" style="color:#7ce495"/><text x="44" y="406.5" font-size="11" class="mono" fill="#c8ccd4">a11y_contrast</text><rect x="264" y="395" width="52" height="16" rx="4" fill="rgba(124,228,149,0.12)"/><text x="290" y="406.5" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#7ce495">PASS</text></g>
+    <line x1="9" y1="424" x2="331" y2="424" stroke="#23262c"/>
+    <text x="22" y="450" font-size="10" fill="#6b7280">2/2 PASS · duración 38s</text>
+  </g>
+
+  <!-- ======== TARJETA 2: Generar código (OK) ======== -->
+  <g class="card" transform="translate(414,128)">
+    <rect class="cardbg" width="340" height="486" rx="10" fill="#22252b" stroke="#33363c"/>
+    <circle cx="26" cy="22" r="11" fill="#1a1d22" stroke="#4a4e57"/>
+    <text x="26" y="26" text-anchor="middle" font-size="11" font-weight="bold" fill="#e8eaed">2</text>
+    <text x="46" y="26.5" font-size="12.5" font-weight="bold" fill="#e8eaed">Generar código</text>
+    <rect x="272" y="12" width="54" height="20" rx="10" fill="rgba(124,228,149,0.12)" stroke="rgba(124,228,149,0.35)"/>
+    <use href="#i-check" x="280" y="17" width="10" height="10" style="color:#7ce495"/>
+    <text x="294" y="25.5" font-size="9.5" font-weight="bold" fill="#7ce495">OK</text>
+    <line x1="0" y1="44" x2="340" y2="44" stroke="#2a2d33"/>
+    <text x="14" y="68" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">MATERIAL EXTRA</text>
+    <g class="chip"><rect x="14" y="78" width="122" height="22" rx="6" fill="#1a1d22" stroke="#2a2d33"/><use href="#i-doc" x="22" y="83" width="12" height="12" style="color:#9aa0aa"/><text x="40" y="92.5" font-size="10" class="mono" fill="#b6bac1">component.tsx</text></g>
+    <g class="chip"><rect x="14" y="106" width="150" height="22" rx="6" fill="#1a1d22" stroke="#2a2d33"/><use href="#i-doc" x="22" y="111" width="12" height="12" style="color:#9aa0aa"/><text x="40" y="120.5" font-size="10" class="mono" fill="#b6bac1">tailwind.config.js</text></g>
+    <text x="14" y="152" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">HISTORIAL DE CONVERSACIÓN</text>
+    <rect x="8" y="162" width="324" height="140" rx="8" fill="#1a1d22" stroke="#2a2d33"/>
+    <rect x="8" y="162" width="324" height="24" rx="8" fill="rgba(124,228,149,0.08)"/>
+    <rect x="8" y="178" width="324" height="12" fill="rgba(124,228,149,0.08)"/>
+    <use href="#i-check" x="18" y="167" width="12" height="12" style="color:#7ce495"/>
+    <text x="34" y="177.5" font-size="9" font-weight="bold" letter-spacing="0.5" fill="#7ce495">CONCLUSIÓN ACEPTADA</text>
+    <line x1="8" y1="186" x2="332" y2="186" stroke="#2a2d33"/>
+    <g class="mrow"><rect x="10" y="192" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="203" r="3" fill="#eab308"/><text x="36" y="206.5" font-size="11" fill="#c8ccd4">Prompt detallado por componente</text></g>
+    <g class="mrow"><rect x="10" y="216" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="227" r="3" fill="#0a84ff"/><text x="36" y="230.5" font-size="11" fill="#c8ccd4">Código generado: 3 archivos</text></g>
+    <g class="mrow"><rect x="10" y="240" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="251" r="3" fill="#0a84ff"/><text x="36" y="254.5" font-size="11" fill="#c8ccd4">Diff revisado sin observaciones</text></g>
+    <use href="#i-chevd" x="18" y="277" width="11" height="11" style="color:#0a84ff"/>
+    <text x="34" y="286" font-size="10" fill="#0a84ff">Ver conversación completa (8)</text>
+    <text x="14" y="326" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">TESTS PROPUESTOS</text>
+    <rect x="8" y="336" width="324" height="132" rx="8" fill="#1a1d22" stroke="#2a2d33"/>
+    <g class="trow"><rect x="9" y="337" width="322" height="42" rx="6" fill="transparent"/><use href="#i-check" x="20" y="351" width="14" height="14" style="color:#7ce495"/><text x="44" y="362.5" font-size="11" class="mono" fill="#c8ccd4">snapshot_tsx</text><rect x="264" y="351" width="52" height="16" rx="4" fill="rgba(124,228,149,0.12)"/><text x="290" y="362.5" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#7ce495">PASS</text></g>
+    <line x1="9" y1="380" x2="331" y2="380" stroke="#23262c"/>
+    <g class="trow"><rect x="9" y="381" width="322" height="42" rx="6" fill="transparent"/><use href="#i-check" x="20" y="395" width="14" height="14" style="color:#7ce495"/><text x="44" y="406.5" font-size="11" class="mono" fill="#c8ccd4">unitario_#4</text><rect x="264" y="395" width="52" height="16" rx="4" fill="rgba(124,228,149,0.12)"/><text x="290" y="406.5" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#7ce495">PASS</text></g>
+    <line x1="9" y1="424" x2="331" y2="424" stroke="#23262c"/>
+    <text x="22" y="450" font-size="10" fill="#6b7280">2/2 PASS · duración 1m 12s</text>
+  </g>
+
+  <!-- ======== TARJETA 3: Validar tests (FAIL) ======== -->
+  <g class="card" transform="translate(804,128)">
+    <rect class="cardbg" width="340" height="486" rx="10" fill="#22252b" stroke="rgba(255,69,58,0.45)"/>
+    <circle cx="26" cy="22" r="11" fill="#1a1d22" stroke="rgba(255,69,58,0.6)"/>
+    <text x="26" y="26" text-anchor="middle" font-size="11" font-weight="bold" fill="#e8eaed">3</text>
+    <text x="46" y="26.5" font-size="12.5" font-weight="bold" fill="#e8eaed">Validar tests</text>
+    <rect x="268" y="12" width="58" height="20" rx="10" fill="rgba(255,69,58,0.12)" stroke="rgba(255,69,58,0.4)"/>
+    <use href="#i-x" x="276" y="17" width="10" height="10" style="color:#ff6b63"/>
+    <text x="290" y="25.5" font-size="9.5" font-weight="bold" fill="#ff6b63">FAIL</text>
+    <line x1="0" y1="44" x2="340" y2="44" stroke="#2a2d33"/>
+    <text x="14" y="68" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">MATERIAL EXTRA</text>
+    <g class="chip"><rect x="14" y="78" width="116" height="22" rx="6" fill="#1a1d22" stroke="#2a2d33"/><use href="#i-doc" x="22" y="83" width="12" height="12" style="color:#9aa0aa"/><text x="40" y="92.5" font-size="10" class="mono" fill="#b6bac1">tests.spec.js</text></g>
+    <g class="chip"><rect x="14" y="106" width="136" height="22" rx="6" fill="#1a1d22" stroke="#2a2d33"/><use href="#i-img" x="22" y="111" width="12" height="12" style="color:#9aa0aa"/><text x="40" y="120.5" font-size="10" class="mono" fill="#b6bac1">error_trace.png</text></g>
+    <text x="14" y="152" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">HISTORIAL DE CONVERSACIÓN</text>
+    <rect x="8" y="162" width="324" height="140" rx="8" fill="#1a1d22" stroke="#2a2d33"/>
+    <rect x="8" y="162" width="324" height="24" rx="8" fill="rgba(124,228,149,0.08)"/>
+    <rect x="8" y="178" width="324" height="12" fill="rgba(124,228,149,0.08)"/>
+    <use href="#i-check" x="18" y="167" width="12" height="12" style="color:#7ce495"/>
+    <text x="34" y="177.5" font-size="9" font-weight="bold" letter-spacing="0.5" fill="#7ce495">CONCLUSIÓN ACEPTADA</text>
+    <line x1="8" y1="186" x2="332" y2="186" stroke="#2a2d33"/>
+    <g class="mrow"><rect x="10" y="192" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="203" r="3" fill="#eab308"/><text x="36" y="206.5" font-size="11" fill="#c8ccd4">Falló integracion_#2, revisá el trace</text></g>
+    <g class="mrow"><rect x="10" y="216" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="227" r="3" fill="#0a84ff"/><text x="36" y="230.5" font-size="11" fill="#c8ccd4">Causa: mock de fetch desactualizado</text></g>
+    <g class="mrow"><rect x="10" y="240" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="251" r="3" fill="#0a84ff"/><text x="36" y="254.5" font-size="11" fill="#c8ccd4">Fix propuesto: regenerar mocks</text></g>
+    <use href="#i-chevd" x="18" y="277" width="11" height="11" style="color:#0a84ff"/>
+    <text x="34" y="286" font-size="10" fill="#0a84ff">Ver conversación completa (15)</text>
+    <text x="14" y="326" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">TESTS PROPUESTOS</text>
+    <rect x="8" y="336" width="324" height="132" rx="8" fill="#1a1d22" stroke="#2a2d33"/>
+    <g class="trow"><rect x="9" y="337" width="322" height="42" rx="6" fill="transparent"/><use href="#i-x" x="20" y="351" width="14" height="14" style="color:#ff6b63"/><text x="44" y="362.5" font-size="11" class="mono" fill="#c8ccd4">integracion_#2</text><rect x="264" y="351" width="52" height="16" rx="4" fill="rgba(255,69,58,0.12)"/><text x="290" y="362.5" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#ff6b63">FAIL</text></g>
+    <line x1="9" y1="380" x2="331" y2="380" stroke="#23262c"/>
+    <g class="trow"><rect x="9" y="381" width="322" height="42" rx="6" fill="transparent"/><use href="#i-check" x="20" y="395" width="14" height="14" style="color:#7ce495"/><text x="44" y="406.5" font-size="11" class="mono" fill="#c8ccd4">validacion_schema</text><rect x="264" y="395" width="52" height="16" rx="4" fill="rgba(124,228,149,0.12)"/><text x="290" y="406.5" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#7ce495">PASS</text></g>
+    <line x1="9" y1="424" x2="331" y2="424" stroke="#23262c"/>
+    <text x="22" y="450" font-size="10" fill="#ff6b63">1/2 PASS · reintentar con fix</text>
+  </g>
+
+  <!-- ======== TARJETA 4: QA automático (En espera) ======== -->
+  <g class="card" transform="translate(1194,128)">
+    <rect class="cardbg" width="340" height="486" rx="10" fill="#22252b" stroke="#33363c"/>
+    <circle cx="26" cy="22" r="11" fill="#1a1d22" stroke="#4a4e57"/>
+    <text x="26" y="26" text-anchor="middle" font-size="11" font-weight="bold" fill="#e8eaed">4</text>
+    <text x="46" y="26.5" font-size="12.5" font-weight="bold" fill="#e8eaed">QA automático</text>
+    <rect x="238" y="12" width="88" height="20" rx="10" fill="rgba(234,179,8,0.12)" stroke="rgba(234,179,8,0.35)"/>
+    <use href="#i-clock" x="246" y="17" width="11" height="11" style="color:#eab308"/>
+    <text x="261" y="25.5" font-size="8.5" font-weight="bold" fill="#eab308">EN ESPERA</text>
+    <line x1="0" y1="44" x2="340" y2="44" stroke="#2a2d33"/>
+    <text x="14" y="68" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">MATERIAL EXTRA</text>
+    <g class="chip"><rect x="14" y="78" width="126" height="22" rx="6" fill="#1a1d22" stroke="#2a2d33"/><use href="#i-doc" x="22" y="83" width="12" height="12" style="color:#9aa0aa"/><text x="40" y="92.5" font-size="10" class="mono" fill="#b6bac1">bug_report.md</text></g>
+    <g class="chip"><rect x="14" y="106" width="104" height="22" rx="6" fill="#1a1d22" stroke="#2a2d33"/><use href="#i-img" x="22" y="111" width="12" height="12" style="color:#9aa0aa"/><text x="40" y="120.5" font-size="10" class="mono" fill="#b6bac1">fix_pr.png</text></g>
+    <text x="14" y="152" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">HISTORIAL DE CONVERSACIÓN</text>
+    <rect x="8" y="162" width="324" height="140" rx="8" fill="#1a1d22" stroke="#2a2d33"/>
+    <rect x="8" y="162" width="324" height="24" rx="8" fill="rgba(124,228,149,0.08)"/>
+    <rect x="8" y="178" width="324" height="12" fill="rgba(124,228,149,0.08)"/>
+    <use href="#i-check" x="18" y="167" width="12" height="12" style="color:#7ce495"/>
+    <text x="34" y="177.5" font-size="9" font-weight="bold" letter-spacing="0.5" fill="#7ce495">CONCLUSIÓN ACEPTADA</text>
+    <line x1="8" y1="186" x2="332" y2="186" stroke="#2a2d33"/>
+    <g class="mrow"><rect x="10" y="192" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="203" r="3" fill="#eab308"/><text x="36" y="206.5" font-size="11" fill="#c8ccd4">QA al terminar el paso 3</text></g>
+    <g class="mrow"><rect x="10" y="216" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="227" r="3" fill="#0a84ff"/><text x="36" y="230.5" font-size="11" fill="#c8ccd4">Suite preparada: smoke + regresión</text></g>
+    <g class="mrow"><rect x="10" y="240" width="320" height="22" rx="4" fill="transparent"/><circle cx="24" cy="251" r="3" fill="#8e8e93"/><text x="36" y="254.5" font-size="11" fill="#8e8e93">En espera del paso anterior</text></g>
+    <use href="#i-chevd" x="18" y="277" width="11" height="11" style="color:#0a84ff"/>
+    <text x="34" y="286" font-size="10" fill="#0a84ff">Ver conversación completa (4)</text>
+    <text x="14" y="326" font-size="9" font-weight="bold" letter-spacing="1" fill="#6b7280">TESTS PROPUESTOS</text>
+    <rect x="8" y="336" width="324" height="132" rx="8" fill="#1a1d22" stroke="#2a2d33"/>
+    <g class="trow"><rect x="9" y="337" width="322" height="42" rx="6" fill="transparent"/><use href="#i-clock" x="20" y="351" width="14" height="14" style="color:#8e8e93"/><text x="44" y="362.5" font-size="11" class="mono" fill="#8e8e93">smoke_e2e</text><rect x="252" y="351" width="64" height="16" rx="4" fill="rgba(142,142,147,0.12)"/><text x="284" y="362.5" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#8e8e93">EN COLA</text></g>
+    <line x1="9" y1="380" x2="331" y2="380" stroke="#23262c"/>
+    <g class="trow"><rect x="9" y="381" width="322" height="42" rx="6" fill="transparent"/><use href="#i-clock" x="20" y="395" width="14" height="14" style="color:#8e8e93"/><text x="44" y="406.5" font-size="11" class="mono" fill="#8e8e93">regresion_ui</text><rect x="252" y="395" width="64" height="16" rx="4" fill="rgba(142,142,147,0.12)"/><text x="284" y="406.5" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#8e8e93">EN COLA</text></g>
+    <line x1="9" y1="424" x2="331" y2="424" stroke="#23262c"/>
+    <text x="22" y="450" font-size="10" fill="#6b7280">0/2 · se ejecutan al activar el paso</text>
+  </g>
+
+  <!-- ======== CARRIL 2: header ======== -->
+  <rect x="24" y="632" width="1512" height="44" rx="10" fill="#1e2126" stroke="#2a2d33"/>
+  <circle cx="44" cy="654" r="4" fill="#8e8e93"/>
+  <text x="56" y="658.5" font-size="13" font-weight="bold" fill="#e8eaed"><tspan fill="#6b7280">CARRIL 2 · </tspan>Scraping Productos</text>
+  <rect class="chip" x="320" y="643" width="196" height="22" rx="11" fill="#16181c" stroke="#2a2d33"/>
+  <use href="#i-clock" x="329" y="647" width="13" height="13" style="color:#9aa0aa"/>
+  <text x="348" y="657.5" font-size="10" class="mono" fill="#9aa0aa">Manual · Esperando turno</text>
+  <g class="ibtn"><rect x="1362" y="640" width="28" height="28" rx="6" fill="#26292f"/><title>Configuración</title><use href="#i-gear" x="1369" y="647" width="14" height="14" style="color:#c8ccd4"/></g>
+  <g><rect x="1398" y="640" width="124" height="28" rx="6" fill="transparent" stroke="#33363c"/><use href="#i-play" x="1408" y="647" width="13" height="13" style="color:#9aa0aa"/><text x="1426" y="658" font-size="11" font-weight="bold" fill="#9aa0aa">Ejecutar todo</text></g>
+
+  <!-- ======== CARRIL 2: tarjetas en reposo ======== -->
+  <g class="card" transform="translate(24,688)">
+    <rect class="cardbg" width="340" height="140" rx="10" fill="#1e2126" stroke="#2a2d33"/>
+    <circle cx="26" cy="22" r="11" fill="#16181c" stroke="#3a3e46"/>
+    <text x="26" y="26" text-anchor="middle" font-size="11" font-weight="bold" fill="#c8ccd4">1</text>
+    <text x="46" y="26.5" font-size="12.5" font-weight="bold" fill="#c8ccd4">Endpoint target</text>
+    <rect x="238" y="12" width="88" height="20" rx="10" fill="rgba(234,179,8,0.12)" stroke="rgba(234,179,8,0.3)"/>
+    <use href="#i-clock" x="246" y="17" width="11" height="11" style="color:#eab308"/>
+    <text x="261" y="25.5" font-size="8.5" font-weight="bold" fill="#eab308">EN ESPERA</text>
+    <line x1="0" y1="44" x2="340" y2="44" stroke="#2a2d33"/>
+    <use href="#i-clock" x="24" y="60" width="20" height="20" style="color:#6b7280"/>
+    <text x="56" y="70" font-size="11" fill="#9aa0aa">Esperando ejecución manual</text>
+    <text x="56" y="88" font-size="10" fill="#6b7280">Se ejecuta con el botón Ejecutar todo</text>
+    <text x="56" y="112" font-size="10" class="mono" fill="#4a4e57">0 adjuntos · 0 tests</text>
+  </g>
+  <g class="card" transform="translate(414,688)">
+    <rect class="cardbg" width="340" height="140" rx="10" fill="#1e2126" stroke="#2a2d33"/>
+    <circle cx="26" cy="22" r="11" fill="#16181c" stroke="#3a3e46"/>
+    <text x="26" y="26" text-anchor="middle" font-size="11" font-weight="bold" fill="#c8ccd4">2</text>
+    <text x="46" y="26.5" font-size="12.5" font-weight="bold" fill="#c8ccd4">Extracción de datos</text>
+    <rect x="234" y="12" width="92" height="20" rx="10" fill="rgba(142,142,147,0.12)" stroke="rgba(142,142,147,0.3)"/>
+    <use href="#i-pause" x="242" y="17" width="11" height="11" style="color:#8e8e93"/>
+    <text x="257" y="25.5" font-size="8.5" font-weight="bold" fill="#8e8e93">BLOQUEADO</text>
+    <line x1="0" y1="44" x2="340" y2="44" stroke="#2a2d33"/>
+    <use href="#i-pause" x="24" y="60" width="20" height="20" style="color:#6b7280"/>
+    <text x="56" y="70" font-size="11" fill="#9aa0aa">Bloqueado por el paso 1</text>
+    <text x="56" y="88" font-size="10" fill="#6b7280">Se habilita al completar el paso anterior</text>
+    <text x="56" y="112" font-size="10" class="mono" fill="#4a4e57">0 adjuntos · 0 tests</text>
+  </g>
+
+  <!-- ======== FOOTER: añadir carril ======== -->
+  <g class="addlane">
+    <rect x="24" y="844" width="1512" height="52" rx="10" fill="transparent" stroke="#33363c" stroke-dasharray="6 5"/>
+    <g class="plus"><use href="#i-plus" x="677" y="862" width="16" height="16" style="color:#9aa0aa"/></g>
+    <text x="701" y="875" font-size="12">Añadir nuevo carril de tareas</text>
+  </g>
+</svg>

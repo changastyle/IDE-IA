@@ -62,6 +62,10 @@ class GitUtils:
         return bool(self.repo) and os.path.isdir(
             os.path.join(self.repo, ".git"))
 
+    def init(self):
+        """git init en la carpeta (crea el repo)."""
+        return self._git_ok("init")
+
     def current_branch(self):
         return self._git("rev-parse", "--abbrev-ref", "HEAD").strip()
 
