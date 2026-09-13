@@ -1,2 +1,2 @@
-/Users/nico/Desktop/cli-ia/sub-carpeta-for-test
-/Users/nico/Desktop/cli-ia
+/Users/nico/Desktop/NG-STUDIO/sub-carpeta-for-test
+/Users/nico/Desktop/NG-STUDIO

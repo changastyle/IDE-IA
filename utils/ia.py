@@ -53,13 +53,25 @@ def api_url(base, path):
     return base + "/v1" + path
 
 
-def fetch_models(base, key=""):
+def fetch_models_full(base, key=""):
+    """Como fetch_models, pero devuelve [(id, pricing|None)] por modelo.
+    pricing es el dict crudo del endpoint (ej: OpenRouter lo incluye)."""
     import requests
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     r = requests.get(api_url(base, "/models"), headers=headers, timeout=8)
     r.raise_for_status()
     r.encoding = "utf-8"
-    return [m["id"] for m in r.json().get("data", []) if "embed" not in m["id"].lower()]
+    out = []
+    for m in r.json().get("data", []):
+        mid = m.get("id", "")
+        if "embed" in mid.lower():
+            continue
+        out.append((mid, m.get("pricing") or None))
+    return out
+
+
+def fetch_models(base, key=""):
+    return [mid for mid, _ in fetch_models_full(base, key)]
 
 
 def is_audio_model(model_id):

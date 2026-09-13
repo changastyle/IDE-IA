@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QComboBox, QLineEdit, QCheckBox, QMessageBox,
     QFileDialog, QInputDialog, QSplitter, QFrame, QListWidget, QListWidgetItem,
     QScrollArea, QSizePolicy, QToolTip, QDialog, QProgressBar, QLayout,
+    QToolButton,
 )
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -78,6 +79,13 @@ Tras cada herramienta recibirás un mensaje "[RESULTADO ...]". Cuando termines d
 Reglas: path siempre relativo a la carpeta de trabajo; no inventes contenido de archivos (léelos antes); si la consulta no requiere archivos, responde directamente.
 
 Contexto del proyecto: existe una carpeta "ns-code/" en la carpeta de trabajo con archivos internos tuyos: "ns-code/contexto.txt" (notas, decisiones y progreso — podés leerlo y editarlo con save_file/edit_file), "ns-code/indexado.txt" (mapa del proyecto) y "ns-code/resumen.txt" (resumen de conversaciones anteriores). Usalos para recordar contexto entre sesiones."""
+
+NO_TOUCH_PROMPT = (
+    "\n\nMODO SOLO LECTURA (no touch code): está activado el modo solo lectura. "
+    "NO modifiques NINGÚN archivo: no uses save_file, edit_file ni ninguna otra "
+    "herramienta que cambie archivos. Analizá, explicá y proponé los cambios "
+    "mostrando el código o el diff en tu respuesta. Recién cuando el usuario "
+    "desactive este modo podrás ejecutar los cambios.")
 
 
 # ---- Utilidades ----
@@ -210,13 +218,25 @@ def compact_tool_json(text):
     return "".join(out)
 
 
-def fetch_models(base, key=""):
+def fetch_models_full(base, key=""):
+    """Modelos del endpoint /models como [(id, pricing|None)].
+    pricing es el dict crudo del provider (ej: OpenRouter lo incluye)."""
     import requests
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     r = requests.get(api_url(base, "/models"), headers=headers, timeout=8)
     r.raise_for_status()
     r.encoding = "utf-8"
-    return [m["id"] for m in r.json().get("data", []) if "embed" not in m["id"].lower()]
+    out = []
+    for m in r.json().get("data", []):
+        mid = m.get("id", "")
+        if "embed" in mid.lower():
+            continue
+        out.append((mid, m.get("pricing") or None))
+    return out
+
+
+def fetch_models(base, key=""):
+    return [mid for mid, _ in fetch_models_full(base, key)]
 
 
 # ---- Tools (operaciones de archivos) ----
@@ -329,7 +349,8 @@ class Worker(QThread):
 
     def __init__(self, base, model, tools, history, api_key="", no_context=False,
                  session_id="", max_tools=50, tool_limit_enabled=True,
-                 request_timeout=600, ctx_parts=None, ctx_skip=None, parent=None):
+                 request_timeout=600, ctx_parts=None, ctx_skip=None, no_touch=False,
+                 parent=None):
         super().__init__(parent)
         self.base, self.model, self.tools, self.history = base, model, tools, history
         self.api_key = api_key
@@ -340,6 +361,7 @@ class Worker(QThread):
         self.request_timeout = request_timeout
         self.ctx_parts = ctx_parts or {}   # partes de contexto on/off
         self.ctx_skip = ctx_skip or {}     # párrafos excluidos por hash
+        self.no_touch = no_touch           # modo solo lectura (no touch code)
         self._stop = False
         self.usage = {"prompt": 0, "completion": 0, "gen_time": 0.0}
         self._backed_up = set()  # paths ya respaldados en este run
@@ -392,6 +414,8 @@ class Worker(QThread):
                                     "(resumen.txt):\n" + res)
                 except OSError:
                     pass
+        if self.no_touch:
+            content += NO_TOUCH_PROMPT
         return {"role": "system", "content": content}
 
     def _slim_history(self, history):
@@ -409,7 +433,11 @@ class Worker(QThread):
     def _chat(self):
         import requests
         if self.no_context:
-            messages = [{"role": "system", "content": "Respondé en español. Usá las herramientas si es necesario."}]
+            sys_simple = ("Respondé en español. Usá las herramientas "
+                          "si es necesario.")
+            if self.no_touch:
+                sys_simple += NO_TOUCH_PROMPT
+            messages = [{"role": "system", "content": sys_simple}]
             user_msgs = [m for m in self.history if m.get("role") == "user"]
             history = user_msgs[-1:] if user_msgs else []
         else:
@@ -1329,7 +1357,7 @@ class _DotNav(QWidget):
     """Columna de puntitos violetas: un punto por prompt del chat.
 
     - Grupo centrado verticalmente, siempre visible.
-    - Hover → tooltip con hora + texto del prompt.
+    - Hover → tooltip con hace-cuánto, hora, archivos tocados y tokens.
     - Clic → salta a ese bloque.
     """
     jump = Signal(int)
@@ -1341,17 +1369,54 @@ class _DotNav(QWidget):
         self.setFixedWidth(16)
         self.setMouseTracking(True)
         self.setCursor(Qt.PointingHandCursor)
-        self._prompts = []   # [(hora, texto)]
+        self._prompts = []   # [[hora, texto, (env, recv), when, files]]
         self._hover = -1
         self._current = -1
 
-    def add_prompt(self, time_text, text):
-        self._prompts.append((time_text, text))
+    def add_prompt(self, time_text, text, when=None):
+        self._prompts.append([time_text, text, (0, 0), when, []])
         self.update()
+
+    def set_tokens(self, idx, sent, received):
+        """Tokens enviados/recibidos de ese prompt (oscurece el punto)."""
+        if 0 <= idx < len(self._prompts):
+            self._prompts[idx][2] = (sent, received)
+            self.update()
+
+    def set_files(self, idx, paths):
+        """Archivos tocados por ese prompt (para el tooltip)."""
+        if 0 <= idx < len(self._prompts):
+            self._prompts[idx][4] = list(paths) if paths else []
+            self.update()
 
     def set_current(self, idx):
         self._current = idx
         self.update()
+
+    @staticmethod
+    def _rel(when, long=False):
+        """Hace cuánto: '3m'/'20m'/'1h' compacto o 'hace 3 min' largo."""
+        if when is None:
+            return ""
+        from datetime import datetime
+        s = int((datetime.now() - when).total_seconds())
+        if s < 0:
+            s = 0
+        if long:
+            if s < 60:
+                return "hace un momento"
+            if s < 3600:
+                return f"hace {s // 60} min"
+            if s < 86400:
+                return f"hace {s // 3600} h"
+            return f"hace {s // 86400} d"
+        if s < 60:
+            return "ahora"
+        if s < 3600:
+            return f"{s // 60}m"
+        if s < 86400:
+            return f"{s // 3600}h"
+        return f"{s // 86400}d"
 
     def _dot_ys(self):
         """Centro Y de cada punto, grupo centrado verticalmente."""
@@ -1366,6 +1431,18 @@ class _DotNav(QWidget):
         y0 = (h - (self.DOT + step * (n - 1))) / 2
         return [y0 + self.DOT / 2 + i * step for i in range(n)]
 
+    def _usage_color(self, i):
+        """Violeta más oscuro cuantos más tokens consumió ese prompt
+        (enviados + recibidos, escala relativa al más caro de la sesión)."""
+        sent, recv = self._prompts[i][2]
+        toks = sent + recv
+        if toks <= 0:
+            return QColor(167, 139, 250, 110)
+        mx = max(sum(p[2]) for p in self._prompts) or toks
+        t = toks / mx
+        lo, hi = (196, 181, 253), (76, 29, 149)   # #c4b5fd → #4c1d95
+        return QColor(*[int(a + (b - a) * t) for a, b in zip(lo, hi)])
+
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -1376,7 +1453,7 @@ class _DotNav(QWidget):
             elif i == self._current:
                 d, color = self.DOT + 2, QColor("#a78bfa")
             else:
-                d, color = self.DOT, QColor(167, 139, 250, 110)
+                d, color = self.DOT, self._usage_color(i)
             p.setBrush(color)
             p.drawEllipse(QPointF(self.width() / 2, y), d / 2, d / 2)
 
@@ -1392,9 +1469,30 @@ class _DotNav(QWidget):
             self._hover = idx
             self.update()
             if 0 <= idx < len(self._prompts):
-                t, txt = self._prompts[idx]
-                QToolTip.showText(e.globalPosition().toPoint(),
-                                  f"{t}\n{txt}" if t else txt, self)
+                t, txt, toks, when, files = self._prompts[idx]
+                rel = self._rel(when, long=True)
+                title = rel or (t or "—")
+                if rel and t:
+                    title = f"{rel} · {t}"
+                body = html.escape(txt[:180])
+                if len(txt) > 180:
+                    body += "…"
+                tip = (f"<div style='color:#a78bfa;font-weight:bold;'>"
+                       f"{title}</div>"
+                       f"<div style='color:#d7dae0;'>{body}</div>")
+                if files:
+                    fl = "".join(
+                        f"<div style='color:#7ec97e;font-size:10px;'>"
+                        f"📝 {html.escape(f_)}</div>" for f_ in files[:8])
+                    extra = (f"<div style='color:#8e8e93;font-size:10px;'>"
+                             f"y {len(files) - 8} más…</div>"
+                             if len(files) > 8 else "")
+                    tip += f"<div style='margin-top:4px;'>{fl}{extra}</div>"
+                if toks[0] or toks[1]:
+                    tip += (f"<div style='color:#8e8e93;font-size:9px;'>"
+                            f"📤 {toks[0]:,} enviados · "
+                            f"📥 {toks[1]:,} recibidos</div>")
+                QToolTip.showText(e.globalPosition().toPoint(), tip, self)
 
     def leaveEvent(self, e):
         self._hover = -1
@@ -1744,6 +1842,194 @@ class ContextInspectorDialog(QDialog):
             self._build()
 
 
+class ModelPopup(QDialog):
+    """Popup de selección de modelo (reemplaza al combo).
+
+    - Sección 📌 Pineados: clic = usar ese modelo.
+    - Sección Todos: clic = pinear/despinear (nunca cambia el activo).
+    - ⚙ abre la ventana de configuración de providers (ModelPickerDialog).
+    - ↻ re-descubre los modelos de los providers.
+    Códigos de salida: 1 = modelo elegido, 2 = abrir configuración.
+    """
+
+    def __init__(self, parent, pinned, all_models, current_ref, refresh_cb=None,
+                 pricing=None):
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
+        self.pinned = list(pinned)
+        self.all_models = list(all_models)
+        self.current_ref = current_ref or ""
+        self.selected_ref = ""
+        self._refresh_cb = refresh_cb
+        self._pricing = pricing if pricing is not None else {}
+        self.setStyleSheet(
+            "QDialog { background:#1b1d22; border:1px solid #33363c; }"
+            "QListWidget { background:#22252b; border:1px solid #33363c;"
+            " border-radius:8px; color:#e8e8ed; font-size:12px; }"
+            "QListWidget::item:selected { background:#0a84ff33; }"
+            "QScrollBar:vertical { width:0px; background:transparent; }"
+            "QScrollBar:horizontal { height:0px; background:transparent; }"
+            "QLineEdit { background:#22252b; border:1px solid #33363c;"
+            " border-radius:8px; padding:5px 8px; color:#e8e8ed; font-size:12px; }"
+            "QPushButton { background:#2a2d34; color:#e8e8ed;"
+            " border:1px solid #33363c; border-radius:6px; padding:4px 10px; }"
+            "QPushButton:hover { background:#34383f; }")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 8, 10, 8)
+        v.setSpacing(6)
+        self.ed_filter = QLineEdit()
+        self.ed_filter.setPlaceholderText("filtrar…")
+        self.ed_filter.setClearButtonEnabled(True)
+        lupa = os.path.join(ICONS_DIR, "lupa.svg")
+        if os.path.exists(lupa):
+            self.ed_filter.addAction(QIcon(lupa), QLineEdit.LeadingPosition)
+        self.ed_filter.textChanged.connect(self._render)
+        v.addWidget(self.ed_filter)
+        self.list = QListWidget()
+        self.list.itemClicked.connect(self._on_click)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.setSelectionMode(QListWidget.NoSelection)
+        v.addWidget(self.list, 1)
+        brow = QHBoxLayout()
+        b_cfg = QPushButton("Configurar providers")
+        b_cfg.setIcon(QIcon(os.path.join(ICONS_DIR, "engranaje.svg")))
+        b_cfg.setToolTip("Providers, API keys y pineado (ventana de siempre)")
+        b_cfg.clicked.connect(lambda: self.done(2))
+        b_ref = QPushButton()
+        b_ref.setIcon(QIcon(os.path.join(ICONS_DIR, "refresh.svg")))
+        b_ref.setFixedSize(30, 26)
+        b_ref.setToolTip("Re-descubrir modelos")
+        b_ref.clicked.connect(self._rediscover)
+        brow.addWidget(b_cfg)
+        brow.addStretch(1)
+        brow.addWidget(b_ref)
+        v.addLayout(brow)
+        self.resize(340, 400)
+        self._render()
+
+    @staticmethod
+    def _short(ref):
+        return ref.partition("::")[2] or ref
+
+    def _header(self, txt, with_pin=False):
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(8, 6, 8, 2)
+        h.setSpacing(5)
+        if with_pin:
+            ic = QLabel()
+            ic.setPixmap(QIcon(os.path.join(ICONS_DIR, "pin.svg")).pixmap(12, 12))
+            h.addWidget(ic)
+        lb = QLabel(txt)
+        lb.setStyleSheet("color:#6b7280; font-size:10px; font-weight:bold;")
+        h.addWidget(lb)
+        h.addStretch(1)
+        it = QListWidgetItem()
+        it.setFlags(Qt.NoItemFlags)
+        it.setSizeHint(QSize(0, 22))
+        self.list.addItem(it)
+        self.list.setItemWidget(it, w)
+
+    def _row(self, ref, kind):
+        """Fila de dos líneas: nombre + pin / provider + precios."""
+        name = self._short(ref)
+        provider = ref.partition("::")[0]
+        price = self._fmt_price(self._pricing.get(ref))
+        w = QWidget()
+        w.setCursor(Qt.PointingHandCursor)
+        v = QVBoxLayout(w)
+        v.setContentsMargins(8, 4, 8, 4)
+        v.setSpacing(1)
+        r1 = QHBoxLayout()
+        r1.setSpacing(5)
+        if ref == self.current_ref:
+            ic = QLabel()
+            ic.setPixmap(QIcon(os.path.join(ICONS_DIR, "check_w.svg")).pixmap(11, 11))
+            r1.addWidget(ic)
+        lb_name = QLabel(name)
+        lb_name.setStyleSheet("color:#e8e8ed; font-size:12px;")
+        r1.addWidget(lb_name, 1)
+        is_pin = ref in self.pinned
+        ic2 = QLabel()
+        ic2.setPixmap(QIcon(os.path.join(
+            ICONS_DIR, "pin.svg" if is_pin else "pin_o.svg")).pixmap(13, 13))
+        r1.addWidget(ic2)
+        v.addLayout(r1)
+        r2 = QHBoxLayout()
+        r2.setSpacing(6)
+        lb_prov = QLabel(provider)
+        lb_prov.setStyleSheet("color:#6b7280; font-size:10px;")
+        r2.addWidget(lb_prov, 1)
+        if price:
+            lb_price = QLabel(price)
+            lb_price.setStyleSheet("color:#30d158; font-size:10px;")
+            r2.addWidget(lb_price)
+        v.addLayout(r2)
+        it = QListWidgetItem()
+        it.setData(Qt.UserRole, (kind, ref))
+        it.setSizeHint(QSize(0, 40))
+        self.list.addItem(it)
+        self.list.setItemWidget(it, w)
+
+    @staticmethod
+    def _fmt_price(pr):
+        """Precio por millón de tokens: 'in $1.5 · out $6 · kv $0.15 /M'."""
+        if not isinstance(pr, dict):
+            return ""
+        def per_m(k):
+            try:
+                return float(pr.get(k) or 0) * 1e6
+            except (TypeError, ValueError):
+                return 0.0
+        pin_, pout, pcache = (per_m("prompt"), per_m("completion"),
+                              per_m("input_cache_read"))
+        if pin_ == 0 and pout == 0:
+            return ""
+        f = lambda x: f"{x:.2f}".rstrip("0").rstrip(".")
+        parts = [f"in ${f(pin_)}", f"out ${f(pout)}"]
+        if pcache:
+            parts.append(f"kv ${f(pcache)}")
+        return " · ".join(parts) + " /M"
+
+    def _render(self):
+        self.list.clear()
+        text = self.ed_filter.text().strip().lower()
+        match = lambda r: not text or text in r.lower()
+        pin_here = [r for r in self.pinned if r in self.all_models]
+        if pin_here:
+            self._header("PINEADOS · CLIC = USAR", with_pin=True)
+            for r in pin_here:
+                if match(r):
+                    self._row(r, "pinned")
+            self._header("TODOS · CLIC = PINEAR / DESPINEAR")
+        else:
+            self._header("PINEÁ UN MODELO PARA USARLO RÁPIDO", with_pin=True)
+        for r in self.all_models:
+            if not match(r):
+                continue
+            self._row(r, "all")
+
+    def _on_click(self, it):
+        data = it.data(Qt.UserRole)
+        if not data:
+            return
+        kind, ref = data
+        if kind == "pinned":
+            self.selected_ref = ref
+            self.done(1)
+            return
+        if ref in self.pinned:
+            self.pinned.remove(ref)
+        else:
+            self.pinned.append(ref)
+        self._render()
+
+    def _rediscover(self):
+        if self._refresh_cb:
+            self.all_models = list(self._refresh_cb() or [])
+        self._render()
+
+
 class ChatPanel(QWidget):
     """Panel 4: chat con IA (LM Studio y compatibles)."""
 
@@ -1808,10 +2094,21 @@ class ChatPanel(QWidget):
         self.v_split.setHandleWidth(4)
         self.h_split.addWidget(self.v_split)
 
-        # ==== Controles de modelo (los hostea el header del Panel) ====
-        self.model_combo = QComboBox()
-        self.model_combo.setToolTip("Modelo de IA")
-        self.model_combo.setMinimumWidth(120)
+        # ==== Controles de modelo (⚙ y ↻ los hostea el header del Panel) ====
+        self._current_ref = ""   # ref "Provider::modelo" activo
+        self._all_models = []    # refs descubiertos
+        self._pricing = {}       # ref → dict de precios (si el provider lo da)
+        self.model_chip = QToolButton()
+        self.model_chip.setObjectName("modelChip")
+        self.model_chip.setToolTip("Modelo de IA — clic para elegir")
+        self.model_chip.setCursor(Qt.PointingHandCursor)
+        self.model_chip.setStyleSheet(
+            "QToolButton#modelChip { background:#22252b;"
+            " border:1px solid #33363c; border-radius:10px;"
+            " padding:4px 12px; color:#e8e8ed; font-size:12px; }"
+            "QToolButton#modelChip:hover { border-color:#4a4e57;"
+            " background:#2a2d34; }")
+        self.model_chip.clicked.connect(self._open_model_popup)
         self.btn_pick = QPushButton("⚙")
         self.btn_pick.setFixedSize(28, 28)
         self.btn_pick.setToolTip("Modelos y providers")
@@ -1860,11 +2157,10 @@ class ChatPanel(QWidget):
         bot_l = QVBoxLayout(bot)
         bot_l.setContentsMargins(6, 0, 6, 6)
         bot_l.setSpacing(4)
-        # Checkboxes + selector de modelo (a la izquierda de todo)
+        # Checkboxes + chip de modelo (a la izquierda de todo)
         ctx_row = QHBoxLayout()
         ctx_row.setSpacing(8)
-        self.model_combo.setMaximumWidth(220)
-        ctx_row.addWidget(self.model_combo)
+        ctx_row.addWidget(self.model_chip)
         self.chk_no_ctx = QCheckBox("Sin contexto")
         self.chk_no_ctx.setToolTip("Envía SIN contexto del proyecto (ahorra tokens)")
         self.chk_no_ctx.setStyleSheet("font-size:11px; color:#888;")
@@ -1873,6 +2169,14 @@ class ChatPanel(QWidget):
         self.chk_auto_send.setToolTip("Envía automáticamente al terminar la transcripción")
         self.chk_auto_send.setStyleSheet("font-size:11px; color:#888;")
         ctx_row.addWidget(self.chk_auto_send)
+        self.chk_no_touch = QCheckBox("No touch code")
+        self.chk_no_touch.setToolTip(
+            "Modo solo lectura: la IA explica y propone cambios pero no toca "
+            "ningún archivo hasta que destiles este check")
+        self.chk_no_touch.setStyleSheet("font-size:11px; color:#888;")
+        self.chk_no_touch.toggled.connect(self._on_no_touch_toggled)
+        self.chk_no_touch.setChecked(bool(self.prefs.get("no_touch_code", False)))
+        ctx_row.addWidget(self.chk_no_touch)
         ctx_row.addStretch(1)
         bot_l.addLayout(ctx_row)
         # Audio meter
@@ -2085,11 +2389,12 @@ class ChatPanel(QWidget):
         cur = None
         # Hora aproximada de la sesión previa: mtime del conversacion.json
         try:
-            sess_hm = datetime.fromtimestamp(
+            sess_dt = datetime.fromtimestamp(
                 os.path.getmtime(os.path.join(self._ns_dir(),
-                                              "conversacion.json"))
-            ).strftime("%H:%M")
+                                              "conversacion.json")))
+            sess_hm = sess_dt.strftime("%H:%M")
         except OSError:
+            sess_dt = None
             sess_hm = ""
         for m in history:
             role = m.get("role")
@@ -2109,7 +2414,7 @@ class ChatPanel(QWidget):
                 cur.busy_bar.setVisible(False)
                 self._blocks.append(cur)
                 self._insert_chat(cur, sess_hm)
-                self._dotnav.add_prompt(sess_hm, text)
+                self._dotnav.add_prompt(sess_hm, text, when=sess_dt)
                 self._dotnav.set_current(len(self._blocks) - 1)
             elif role == "assistant" and cur is not None:
                 if '"tool"' in text:
@@ -2122,6 +2427,9 @@ class ChatPanel(QWidget):
                         u.get("completion", 0), u.get("tps", 0),
                         u.get("prompt", 0), u.get("model", ""),
                         u.get("elapsed", 0))
+                    self._dotnav.set_tokens(
+                        len(self._blocks) - 1,
+                        u.get("prompt", 0), u.get("completion", 0))
         self._prompt_counter = n
         if n:
             self._show_restored_banner(n)
@@ -2160,47 +2468,94 @@ class ChatPanel(QWidget):
     # ---- Providers / modelos ----
 
     def _current_provider(self):
-        ref = self.model_combo.currentData()
+        ref = self._current_ref
         if not ref:
             return None, None, None, None
         provider, _, model = ref.partition("::")
         cfg = self.providers.get(provider, {})
         return cfg.get("base", LMSTUDIO), model, cfg.get("key", ""), provider
 
+    def _update_chip(self):
+        """Muestra el nombre corto del modelo activo en el chip."""
+        ref = self._current_ref
+        name = ref.partition("::")[2] or ref
+        if len(name) > 24:
+            name = name[:23] + "…"
+        self.model_chip.setText(name if name else "(sin modelo)")
+        flecha = os.path.join(ICONS_DIR, "flecha_abajo.svg")
+        if os.path.exists(flecha):
+            self.model_chip.setIcon(QIcon(flecha))
+            self.model_chip.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+
+    def _set_current_model(self, ref):
+        """Fija el modelo activo y lo persiste como primario."""
+        self._current_ref = ref
+        self.prefs["primary_model"] = ref
+        self.settings.setValue("prefs", json.dumps(self.prefs))
+        self._update_chip()
+
     def refresh_models(self):
         """Descubre modelos de todos los providers configurados."""
-        self.model_combo.clear()
         all_models = []
+        pricing = {}
         for pname, cfg in self.providers.items():
             base = cfg.get("base", LMSTUDIO)
             key = cfg.get("key", "")
             try:
-                models = fetch_models(base, key)
+                models = fetch_models_full(base, key)
             except Exception:
                 continue
-            for m in models:
-                ref = f"{pname}::{m}"
-                all_models.append(ref)
-                self.model_combo.addItem(f"{pname} · {m}", ref)
-        # Pinned models arriba (reordenar)
-        if self.pinned:
-            # Mover pinned al frente
-            items = []
-            for i in range(self.model_combo.count()):
-                items.append((self.model_combo.itemText(i),
-                              self.model_combo.itemData(i)))
-            pinned_items = [it for it in items if it[1] in self.pinned]
-            other_items = [it for it in items if it[1] not in self.pinned]
-            self.model_combo.clear()
-            for text, data in pinned_items + other_items:
-                self.model_combo.addItem(text, data)
-        # Aplicar modelo primario si está seteado
-        primary = self.prefs.get("primary_model", "")
-        if primary:
-            idx = self.model_combo.findData(primary)
-            if idx >= 0:
-                self.model_combo.setCurrentIndex(idx)
+            for m, pr in models:
+                all_models.append(f"{pname}::{m}")
+                if pr:
+                    pricing[f"{pname}::{m}"] = pr
         self._all_models = all_models
+        self._pricing.clear()
+        self._pricing.update(pricing)
+        # Modelo activo: primario si existe, si no el primer pineado
+        # disponible, si no el primero que se descubra
+        primary = self.prefs.get("primary_model", "")
+        if primary in all_models:
+            self._current_ref = primary
+        else:
+            pin = next((r for r in self.pinned if r in all_models), "")
+            self._current_ref = pin or (all_models[0] if all_models else "")
+        self._update_chip()
+        return all_models
+
+    def _open_model_popup(self):
+        """Popup de selección: pineados (clic = usar) + todos
+        (clic = pinear/despinear)."""
+        if not self._all_models:
+            self.refresh_models()
+        dlg = ModelPopup(self, self.pinned, self._all_models,
+                         self._current_ref, refresh_cb=self.refresh_models,
+                         pricing=self._pricing)
+        pos = self.model_chip.mapToGlobal(QPoint(0, self.model_chip.height()))
+        dlg.adjustSize()
+        screen = self.screen().availableGeometry()
+        if pos.x() + dlg.width() > screen.right():
+            pos.setX(screen.right() - dlg.width())
+        if pos.y() + dlg.height() > screen.bottom():
+            pos.setY(max(screen.top(), pos.y() - dlg.height()
+                         - self.model_chip.height()))
+        dlg.move(pos)
+        ret = dlg.exec()
+        if dlg.pinned != self.pinned:
+            self.pinned = dlg.pinned
+            self.settings.setValue("pinned", json.dumps(self.pinned))
+        if ret == 1 and dlg.selected_ref:
+            self._set_current_model(dlg.selected_ref)
+        elif ret == 2:
+            self._open_model_picker()
+
+    def _on_no_touch_toggled(self, checked):
+        """Modo solo lectura: destaca el check y persiste el estado."""
+        self.chk_no_touch.setStyleSheet(
+            "font-size:11px; font-weight:bold; color:#ff9f0a;" if checked
+            else "font-size:11px; color:#888;")
+        self.prefs["no_touch_code"] = checked
+        self.settings.setValue("prefs", json.dumps(self.prefs))
 
     def _open_model_picker(self):
         """Abre el diálogo de modelos y providers (pin models, add/del)."""
@@ -2494,7 +2849,8 @@ class ChatPanel(QWidget):
         self._current_block = block
         self._insert_chat(block, block.timestamp[:5])
         # Agregar al prompt navigator (puntitos)
-        self._dotnav.add_prompt(block.timestamp[:5], text)
+        self._dotnav.add_prompt(block.timestamp[:5], text,
+                                when=datetime.now())
         self._dotnav.set_current(len(self._blocks) - 1)
         # Scroll al final
         self.chat_scroll.ensureWidgetVisible(block)
@@ -2505,6 +2861,7 @@ class ChatPanel(QWidget):
         self.input.clear()
         self.worker = Worker(base, model, self.tools, self.history, key,
                             no_context=self.chk_no_ctx.isChecked(),
+                            no_touch=self.chk_no_touch.isChecked(),
                             session_id=session_id,
                             max_tools=int(self.prefs.get("max_tools", 50)),
                             tool_limit_enabled=bool(self.prefs.get("tool_limit_enabled", True)),
@@ -2548,6 +2905,8 @@ class ChatPanel(QWidget):
         if self._current_block:
             self._current_block.add_file_changed(
                 path, tool, lines_before, lines_after, bytes_before, bytes_after)
+            self._dotnav.set_files(len(self._blocks) - 1,
+                                   list(self._current_block.files_touched))
 
     def _on_file_backup(self, path, before, existed):
         """Guarda el estado previo del archivo (para ✗ revertir)."""
@@ -2632,6 +2991,8 @@ class ChatPanel(QWidget):
                     u["completion"], tps, u["prompt"],
                     self.worker.model, self._current_block._elapsed)
                 self._current_block.finish_status()
+                self._dotnav.set_tokens(len(self._blocks) - 1,
+                                        u["prompt"], u["completion"])
                 self._append_resumen(self._current_block)
             # Guardar usage en el último mensaje assistant (pills al restaurar)
             for m in reversed(self.history):

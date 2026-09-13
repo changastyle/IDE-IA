@@ -1,0 +1,5 @@
+/Users/nico/Desktop/NG-STUDIO	main	1789197833	#3574f0
+/Users/nico/Desktop/NG-STUDIO	dev	1789198048	#2ec4a5
+/Users/nico/Desktop/NG-STUDIO	feature/perro-gato	1789254089	#e8804a
+/Users/nico/Desktop/NG-STUDIO	gato	1789254089	#a78bfa
+/Users/nico/Desktop/NG-STUDIO	puto	1789254089	#e05561
