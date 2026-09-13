@@ -23,8 +23,12 @@ import re
 import sys
 import shlex
 import subprocess
+import zlib
 
-import pty as _pty
+try:
+    import pty as _pty
+except ImportError:  # Windows: pty no existe
+    _pty = None
 import signal as _signal
 from PySide6.QtCore import (Qt, QMimeData, QPoint, Signal, QProcess, QSize,
                             QTimer, QSocketNotifier)
@@ -34,7 +38,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSplitter, QPlainTextEdit, QMenu, QFileDialog,
     QGraphicsDropShadowEffect, QSizePolicy, QTabWidget,
-    QDialog, QListWidget, QListWidgetItem,
+    QDialog, QListWidget, QListWidgetItem, QWidgetAction, QLineEdit,
+    QMessageBox,
 )
 
 from utils.git import (
@@ -92,10 +97,6 @@ QPushButton#tbFolder {
     background:#2a2d33; border:none; border-radius:8px; padding:6px 14px;
     color:#e8eaed; font-weight:bold; font-size:13px; text-align:left; }
 QPushButton#tbFolder:hover { background:#33373e; }
-QPushButton#tbProjects {
-    background:#2a2d33; border:none; border-radius:6px;
-    color:#9aa0aa; font-size:12px; padding:0; }
-QPushButton#tbProjects:hover { background:#33373e; color:#fff; }
 QListWidget#projList {
     background:#22242a; border:1px solid #33363c; border-radius:8px;
     padding:4px; font-size:13px; outline:none; }
@@ -205,11 +206,26 @@ QMenu#branchMenu {
 QMenu#branchMenu::item { padding:6px 18px; border-radius:6px; }
 QMenu#branchMenu::item:selected { background:#2f6fdb; }
 QMenu#branchMenu::item:disabled { color:#666; }
-QMenu#folderMenu {
+QMenu#projMenu {
     background:#22252b; border:1px solid #3a3e46; border-radius:10px;
     padding:6px; color:#d7dae0; font-size:13px; }
-QMenu#folderMenu::item { padding:6px 18px; border-radius:6px; }
-QMenu#folderMenu::item:selected { background:#2f6fdb; }
+QMenu#projMenu::item { padding:6px 14px; border-radius:6px; }
+QMenu#projMenu::item:selected { background:#2f6fdb; }
+QMenu#projMenu::item:disabled {
+    color:#7d828c; font-size:11px; font-weight:bold; padding:6px 14px 2px; }
+QMenu#projMenu::separator {
+    height:1px; background:#33363c; margin:5px 10px; }
+QWidget#projRow { background:transparent; border-radius:6px; }
+QWidget#projRow:hover { background:#2f6fdb; }
+QLabel#projRowName {
+    background:transparent; color:#e8eaed; font-weight:bold; font-size:13px; }
+QLabel#projRowPath {
+    background:transparent; color:#9aa0aa; font-size:11px; }
+QLabel#projRowDot {
+    background:transparent; color:#4caf50; font-size:11px; }
+QWidget#projRow:hover QLabel#projRowName { color:#fff; }
+QWidget#projRow:hover QLabel#projRowPath { color:#cfe0ff; }
+QWidget#projRow:hover QLabel#projRowDot { color:#7ce495; }
 #HotBar { background:#1a1c21; border-right:1px solid #2a2d33; }
 #HotBar QPushButton {
     background:transparent; border:none; border-radius:8px;
@@ -489,6 +505,16 @@ class TerminalTab(QWidget):
         self.out.setPlaceholderText("Terminal… (escribí acá)")
         self.out.send_data.connect(self.proc_write)
         v.addWidget(self.out)
+        if _pty is None:
+            # Sin pty (Windows): la terminal integrada no está disponible
+            self._alive = False
+            self.pid = self.fd = self.notifier = self._screen = None
+            self._scrollback = []
+            self.out.setReadOnly(True)
+            self.out.setPlaceholderText(
+                "Terminal no disponible en esta plataforma "
+                "(pty solo existe en macOS/Linux).")
+            return
         # Pty: shell real con edición de línea, historial y tab-completion
         self.pid, self.fd = _pty.fork()
         if self.pid == 0:  # hijo: zsh interactivo en el pty
@@ -613,11 +639,13 @@ class TerminalTab(QWidget):
             except (ProcessLookupError, PermissionError):
                 pass
             self._alive = False
-        try:
-            os.close(self.fd)
-        except OSError:
-            pass
-        self.notifier.setEnabled(False)
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+        if self.notifier is not None:
+            self.notifier.setEnabled(False)
 
 
 class TerminalOverlay(QFrame):
@@ -792,6 +820,71 @@ class ProjectsDialog(QDialog):
             self.accept()
 
 
+_BADGE_COLORS = ["#e8912d", "#57b64f", "#d75f9e", "#31a8a0",
+                 "#9a5fd0", "#4a86e8", "#d9534f", "#c9a227"]
+
+
+def _initials(name):
+    """'battle-citi-5.3-flash' → 'BF'; 'languages' → 'LA'."""
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", name) if w]
+    if len(words) >= 2:
+        return (words[0][0] + words[-1][0]).upper()
+    return (name[:2] or "?").upper()
+
+
+class _ProjectRow(QWidget):
+    """Fila del menú de proyectos: badge con iniciales + nombre + path."""
+    clicked = Signal()
+
+    def __init__(self, path, current=False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("projRow")
+        self.setAttribute(Qt.WA_StyledBackground)  # que pinte el :hover
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumWidth(320)
+        name = os.path.basename(path.rstrip("/")) or path
+        disp = path.replace(os.path.expanduser("~"), "~")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 5, 12, 5)
+        lay.setSpacing(10)
+
+        badge = QLabel(_initials(name))
+        badge.setFixedSize(26, 26)
+        badge.setAlignment(Qt.AlignCenter)
+        color = _BADGE_COLORS[
+            zlib.crc32(name.encode()) % len(_BADGE_COLORS)]
+        badge.setStyleSheet(
+            f"background:{color}; color:#fff; border-radius:6px;"
+            "font-weight:bold; font-size:11px;")
+        lay.addWidget(badge)
+
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        nl = QLabel(name)
+        nl.setObjectName("projRowName")
+        pl = QLabel(disp)
+        pl.setObjectName("projRowPath")
+        col.addWidget(nl)
+        col.addWidget(pl)
+        lay.addLayout(col, 1)
+
+        if current:
+            dot = QLabel("●")
+            dot.setObjectName("projRowDot")
+            lay.addWidget(dot)
+
+        # Las labels no capturan mouse: la fila entera es clicable/hover
+        for w in self.findChildren(QLabel):
+            w.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
+
+
 class TopBar(QFrame):
     """Barra superior de 50px: carpeta, rama git, pull/push, navegación,
     y run configurations a la derecha."""
@@ -814,22 +907,13 @@ class TopBar(QFrame):
         h.setContentsMargins(10, 6, 10, 6)
         h.setSpacing(8)
 
-        # Carpeta actual (botón principal)
-        self.btn_folder = QPushButton("Sin carpeta")
+        # Proyecto actual (botón único con dropdown integrado)
+        self.btn_folder = QPushButton("Sin carpeta  ⌄")
         self.btn_folder.setObjectName("tbFolder")
         self.btn_folder.setCursor(Qt.PointingHandCursor)
-        self.btn_folder.setToolTip("Carpeta de trabajo — clic para recientes")
+        self.btn_folder.setToolTip("Proyecto — clic para cambiar o clonar")
         self.btn_folder.clicked.connect(self._show_folder_menu)
         h.addWidget(self.btn_folder)
-
-        # Dropdown de proyectos (flechita separada)
-        self.btn_projects = QPushButton("⌄")
-        self.btn_projects.setObjectName("tbProjects")
-        self.btn_projects.setFixedSize(22, 30)
-        self.btn_projects.setCursor(Qt.PointingHandCursor)
-        self.btn_projects.setToolTip("Open Previous Project — abrir en nueva ventana")
-        self.btn_projects.clicked.connect(self._show_projects_popup)
-        h.addWidget(self.btn_projects)
 
         h.addSpacing(10)
 
@@ -966,51 +1050,66 @@ class TopBar(QFrame):
         from utils.recents import add_recent
         self.repo_path = path or ""
         name = os.path.basename(path) if path else "Sin carpeta"
-        self.btn_folder.setText(name)
+        self.btn_folder.setText(f"{name}  ⌄")
         self._refresh_git()
         if path:
             add_recent(path)
         self.load_run_configs()
 
     def _show_folder_menu(self):
+        menu = self._build_projects_menu()
+        menu.exec(self.btn_folder.mapToGlobal(
+            QPoint(0, self.btn_folder.height())))
+
+    def _build_projects_menu(self):
+        """Dropdown único del proyecto: acciones arriba, luego las
+        sesiones abiertas y los proyectos recientes (estilo Windsurf)."""
         from utils.recents import load_recents
         from utils.sessions import load_sessions
         menu = QMenu(self)
-        menu.setObjectName("folderMenu")
-        home = os.path.expanduser("~")
-        # Sesiones abiertas (instancias activas)
-        sessions = load_sessions()
-        if sessions:
-            head = menu.addAction("Abiertas")
-            head.setEnabled(False)
-            for p in sessions:
-                disp = p.replace(home, "~")
-                mark = "● " if p == os.path.realpath(self.repo_path or "") else "  "
-                act = QAction(mark + disp, menu)
-                act.setToolTip(p)
-                act.triggered.connect(lambda _, pp=p: self._select_folder(pp))
-                menu.addAction(act)
-            menu.addSeparator()
-        # Recientes
-        recents = load_recents()
-        if recents:
-            head = menu.addAction("Recientes")
-            head.setEnabled(False)
-            for p in recents:
-                if p in sessions:
-                    continue
-                disp = p.replace(home, "~")
-                mark = "● " if p == os.path.realpath(self.repo_path or "") else "  "
-                act = QAction(mark + disp, menu)
-                act.setToolTip(p)
-                act.triggered.connect(lambda _, pp=p: self._select_folder(pp))
-                menu.addAction(act)
-            menu.addSeparator()
-        a_open = QAction("📂  Abrir carpeta…", menu)
+        menu.setObjectName("projMenu")
+
+        a_new = QAction("＋  New Project…", menu)
+        a_new.triggered.connect(self._new_project)
+        menu.addAction(a_new)
+        a_open = QAction("📂  Open…", menu)
         a_open.triggered.connect(self._pick_folder)
         menu.addAction(a_open)
-        menu.exec(self.btn_folder.mapToGlobal(
-            QPoint(0, self.btn_folder.height())))
+        a_cl = QAction("⎇  Clone Repository…", menu)
+        a_cl.triggered.connect(self._clone_repo)
+        menu.addAction(a_cl)
+        a_nw = QAction("🗔  Open in New Window…", menu)
+        a_nw.triggered.connect(self._show_projects_popup)
+        menu.addAction(a_nw)
+
+        cur = os.path.realpath(self.repo_path or "")
+        sessions = load_sessions()
+        recents = [p for p in load_recents() if p not in sessions]
+
+        def _header(text):
+            menu.addSeparator()
+            h = menu.addAction(text)
+            h.setEnabled(False)
+
+        def _row(p):
+            act = QWidgetAction(menu)
+            row = _ProjectRow(p, current=(p == cur))
+            row.setToolTip(p)
+            row.clicked.connect(
+                lambda pp=p: (menu.close(), self._select_folder(pp)))
+            act.setDefaultWidget(row)
+            menu.addAction(act)
+
+        if sessions:
+            _header("Open Projects")
+            for p in sessions:
+                _row(p)
+        if recents:
+            _header("Recent Projects")
+            for p in recents:
+                _row(p)
+
+        return menu
 
     def _select_folder(self, path):
         self.set_folder(path)
@@ -1020,6 +1119,70 @@ class TopBar(QFrame):
         d = QFileDialog.getExistingDirectory(self, "Elegir carpeta de trabajo")
         if d:
             self._select_folder(d)
+
+    def _new_project(self):
+        # El diálogo nativo de macOS permite crear la carpeta ahí mismo
+        d = QFileDialog.getExistingDirectory(
+            self, "New Project — elegir o crear carpeta")
+        if d:
+            self._select_folder(d)
+
+    def _clone_repo(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Clone Repository")
+        dlg.setMinimumWidth(430)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(14, 14, 14, 14)
+        v.setSpacing(8)
+        v.addWidget(QLabel("URL del repositorio:"))
+        url_edit = QLineEdit()
+        url_edit.setPlaceholderText("https://github.com/usuario/repo.git")
+        v.addWidget(url_edit)
+        v.addWidget(QLabel("Clonar dentro de:"))
+        base = os.path.dirname(
+            (self.repo_path or os.path.expanduser("~/Desktop")).rstrip("/"))
+        dest_edit = QLineEdit(base)
+        drow = QHBoxLayout()
+        drow.addWidget(dest_edit, 1)
+        btn_browse = QPushButton("…")
+        btn_browse.setFixedWidth(32)
+        btn_browse.clicked.connect(lambda: dest_edit.setText(
+            QFileDialog.getExistingDirectory(
+                dlg, "Carpeta destino") or dest_edit.text()))
+        drow.addWidget(btn_browse)
+        v.addLayout(drow)
+        brow = QHBoxLayout()
+        brow.addStretch(1)
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_ok = QPushButton("Clonar")
+        btn_ok.setObjectName("success")
+        brow.addWidget(btn_cancel)
+        brow.addWidget(btn_ok)
+        v.addLayout(brow)
+
+        def _do_clone():
+            from utils.git import clone
+            url = url_edit.text().strip()
+            dest = os.path.expanduser(dest_edit.text().strip())
+            if not url or not dest:
+                return
+            dlg.accept()
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                ok, res = clone(url, dest)
+            finally:
+                QApplication.restoreOverrideCursor()
+            if ok:
+                self._select_folder(res)
+            else:
+                QMessageBox.warning(
+                    self, "Clone Repository",
+                    f"No se pudo clonar:\n{res}")
+
+        btn_ok.clicked.connect(_do_clone)
+        url_edit.returnPressed.connect(_do_clone)
+        dlg.exec()
 
     def _show_projects_popup(self):
         """Abre un diálogo con todos los proyectos previos y permite
@@ -1322,6 +1485,14 @@ class MainBody(QWidget):
         self._add_chat_header_ctrls(pc, self.chat_panel)
         self.left_zone.toggle("chat", False)
 
+        # Panel de Git (ramas + grafo) en zona izquierda
+        from UI.panels.git_panel import GitPanel
+        self.git_panel = GitPanel()
+        pg = self.left_zone.add_panel_widget("git", "Git", self.git_panel)
+        pg.header.add_action("↻", "Refrescar", self.git_panel.refresh)
+        self.left_zone.toggle("git", False)
+        self.git_panel.branch_changed.connect(self._on_branch_changed)
+
         # Panel de archivos en zona derecha (independiente, oculto al inicio)
         self.files_panel_right = FilesPanel()
         pfr = self.right_zone.add_panel_widget(
@@ -1384,6 +1555,14 @@ class MainBody(QWidget):
         self.center.review_rejected.connect(
             lambda p: self._resolve_from_editor(p, False))
 
+    def _on_branch_changed(self, branch):
+        """Checkout desde el panel de Git → refrescar la top bar."""
+        p = self.parent()
+        while p and not hasattr(p, "top_bar"):
+            p = p.parent()
+        if p and hasattr(p, "top_bar"):
+            p.top_bar.set_folder(p.top_bar.repo_path)
+
     def _add_chat_header_ctrls(self, panel, chat):
         """Controles de modelo en la fila del título 'Chat IA', a la derecha.
         (El combo de modelo vive en la fila inferior del chat.)"""
@@ -1434,6 +1613,24 @@ class MainBody(QWidget):
         if take_c > center:
             take_c, take_l = center, need - center
         sp.setSizes([left - take_l, center - take_c, right + need])
+
+    def ensure_git_width(self):
+        """Al abrir el panel de Git, la zona izquierda ocupa 75% del ancho."""
+        sp = self.main_splitter
+        sizes = sp.sizes()
+        if len(sizes) < 3 or sum(sizes) <= 0:
+            return
+        total = sum(sizes)
+        target = int(total * 0.75)
+        if sizes[0] >= target:
+            return
+        need = target - sizes[0]
+        take_c = min(sizes[1], need)
+        take_r = need - take_c
+        if take_r > sizes[2]:
+            take_r = sizes[2]
+            take_c = need - take_r
+        sp.setSizes([sizes[0] + need, sizes[1] - take_c, sizes[2] - take_r])
 
     def _open_from_chat(self, rel_path):
         """Abre en el editor un archivo tocado por la IA (path relativo)."""
@@ -1596,6 +1793,7 @@ class MainBody(QWidget):
         self.files_panel_right.set_root(path)
         self.chat_panel.set_repo(path)
         self.chat_panel_right.set_repo(path)
+        self.git_panel.set_repo(path)
 
 
 class UIMainWindow(QMainWindow):
@@ -1672,9 +1870,11 @@ class UIMainWindow(QMainWindow):
             lambda on: self.body.left_zone.toggle("chat", on))
         self.hotbar_left.btns["term"].toggled.connect(
             lambda on: self.body.toggle_terminal(on))
-        # Git de la hotbar → mismo menú de ramas de la top bar
-        self.hotbar_left.btns["git"].clicked.connect(
-            self._show_branch_menu_from_hotbar)
+        # Git de la hotbar → panel de Git (ramas + grafo)
+        self.hotbar_left.btns["git"].toggled.connect(
+            lambda on: (self.body.left_zone.toggle("git", on),
+                        QTimer.singleShot(0, self.body.ensure_git_width)
+                        if on else None))
         # Hotbar derecha → zona derecha (independiente)
         self.hotbar_right.btns["files"].toggled.connect(
             lambda on: self.body.right_zone.toggle("files", on))
@@ -1700,10 +1900,11 @@ class UIMainWindow(QMainWindow):
         # Panel de archivos sigue a la carpeta de la top bar
         self.body.files_panel.file_activated.connect(self._on_file_activated)
         self.body.files_panel_right.file_activated.connect(self._on_file_activated)
-        # Restaurar última carpeta abierta (o la del proyecto si no hay)
+        # Restaurar última carpeta abierta (o ~/Desktop si no hay)
         from utils.sessions import last_session, add_session
-        start_dir = last_session() or os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__)))
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        start_dir = last_session() or (
+            desktop if os.path.isdir(desktop) else os.path.expanduser("~"))
         self.top_bar.set_folder(start_dir)
         self.body.set_root(start_dir)
         add_session(start_dir)
@@ -1762,11 +1963,6 @@ class UIMainWindow(QMainWindow):
         if not hasattr(QApplication.instance(), "_windows"):
             QApplication.instance()._windows = []
         QApplication.instance()._windows.append(w)
-
-    def _show_branch_menu_from_hotbar(self):
-        """Botón git de la hotbar → menú de ramas (reusa el de la top bar)."""
-        self.hotbar_left.btns["git"].setChecked(False)
-        self.top_bar._show_branch_menu()
 
     def _show_settings_menu(self):
         """Engranaje de la top bar → menú de opciones."""

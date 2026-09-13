@@ -82,3 +82,27 @@ def status_short(path):
 def has_remote(path):
     ok, out = _run(path, "remote")
     return ok and bool(out.strip())
+
+
+def clone_dest_name(url):
+    """Nombre de carpeta que generaría `git clone <url>`."""
+    name = url.rstrip("/").rsplit("/", 1)[-1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    if ":" in name:  # estilo scp: git@host:repo.git
+        name = name.rsplit(":", 1)[-1]
+    return name
+
+
+def clone(url, dest_parent):
+    """Clona url dentro de dest_parent. Devuelve (ok, dest_path | stderr)."""
+    name = clone_dest_name(url)
+    if not name:
+        return False, "URL inválida"
+    if not os.path.isdir(dest_parent):
+        return False, f"No existe la carpeta destino: {dest_parent}"
+    dest = os.path.join(dest_parent, name)
+    if os.path.exists(dest):
+        return False, f"Ya existe {dest}"
+    ok, out = _run(dest_parent, "clone", url, timeout=600)
+    return (True, dest) if ok else (False, out)
