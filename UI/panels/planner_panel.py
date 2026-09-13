@@ -3,19 +3,40 @@
 
 Carriles horizontales con tareas secuenciales ejecutadas por agentes IA.
 Diseño de referencia: workflow_planner_mockup.svg (paleta del app).
-Placeholder funcional: datos de ejemplo, sin backend todavía.
+
+Persistencia en el workspace abierto:
+
+    <root>/ng-studio-stuff/planner/
+        tarea-001-slug/            ← un carril
+            lane.json              ← {"name": str, "cron": str|null}
+            paso-001-slug/         ← una tarjeta (step)
+                step.json          ← {"title": str, "status": ok|fail|wait|blocked}
+                conversacion.json  ← [{"role": user|ia|sys, "text": str}, ...]
+                tests.json         ← [{"name": str, "result": pass|fail|queue}, ...]
+                requerimientos.md  ← doc libre (aparece como adjunto)
+                archivos/          ← adjuntos (chips doc/img según extensión)
+        tarea-002-...
 """
+import json
 import os
+import re
+import unicodedata
 
 from PySide6.QtCore import Qt, QSize, QPointF, QRectF
 from PySide6.QtGui import QIcon, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
-    QToolButton, QScrollArea, QSizePolicy,
+    QToolButton, QScrollArea, QSizePolicy, QInputDialog,
 )
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ICONS_DIR = os.path.join(APP_DIR, "iconos")
+
+STUFF_DIR = "ng-studio-stuff"   # carpeta interna del workspace abierto
+PLANNER_SUBDIR = "planner"
+LANE_PREFIX = "tarea-"          # tarea-001-slug/
+STEP_PREFIX = "paso-"           # paso-001-slug/
+IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".heic"}
 
 CAPTION = "color:#6b7280; font-size:9px; font-weight:bold; letter-spacing:1px;"
 MUTED = "color:#9aa0aa; font-size:11px;"
@@ -42,6 +63,32 @@ def _icon(name):
 def _rgba(hex_color, alpha):
     c = QColor(hex_color)
     return f"rgba({c.red()},{c.green()},{c.blue()},{alpha})"
+
+
+def _read_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _pretty_name(dirname, prefix):
+    """'tarea-001-refactor-ui' → 'Refactor Ui' (nombre por el dir si no hay lane.json)."""
+    n = dirname[len(prefix):] if dirname.startswith(prefix) else dirname
+    n = re.sub(r"^\d+[-_]?", "", n) or dirname
+    return n.replace("-", " ").replace("_", " ").strip().title()
+
+
+def _slugify(text):
+    t = unicodedata.normalize("NFKD", text)
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return re.sub(r"[^a-zA-Z0-9]+", "-", t).strip("-").lower()[:40]
 
 
 # ---- Piezas de la tarjeta ----
@@ -451,10 +498,12 @@ class Lane(QFrame):
 
 class PlannerPanel(QWidget):
     """AI Autonomous Workflow Planner: carriles con tareas secuenciales
-    ejecutadas por agentes IA (datos de ejemplo por ahora)."""
+    ejecutadas por agentes IA, persistidos en <root>/ng-studio-stuff/planner/."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.root = ""
+        self.planner_dir = ""
         self.setStyleSheet(
             "QWidget { background:#16181c; }"
             "QScrollArea { border:none; }"
@@ -475,6 +524,9 @@ class PlannerPanel(QWidget):
         self.lanes_box = QVBoxLayout()
         self.lanes_box.setSpacing(10)
         pv.addLayout(self.lanes_box)
+        self._empty = QLabel("Sin tareas todavía — creá un carril abajo")
+        self._empty.setStyleSheet("color:#4a4e57; font-size:12px; padding:18px;")
+        self._empty.setAlignment(Qt.AlignCenter)
         self.btn_add = QPushButton(" Añadir nuevo carril de tareas")
         self.btn_add.setIcon(_icon("mas"))
         self.btn_add.setIconSize(QSize(14, 14))
@@ -488,71 +540,123 @@ class PlannerPanel(QWidget):
         pv.addWidget(self.btn_add)
         pv.addStretch(1)
         scroll.setWidget(page)
-        self._lane_count = 0
-        for lane in self._demo_lanes():
-            self._lane_count += 1
+        self.reload()
+
+    # ---- Workspace / disco ----
+
+    def set_repo(self, path):
+        """Carpeta de trabajo abierta: crea ng-studio-stuff/planner/ y carga."""
+        self.root = os.path.realpath(path) if path else ""
+        self.planner_dir = (os.path.join(self.root, STUFF_DIR, PLANNER_SUBDIR)
+                            if self.root else "")
+        if self.planner_dir:
+            try:
+                os.makedirs(self.planner_dir, exist_ok=True)
+            except OSError:
+                pass
+        self.reload()
+
+    def reload(self):
+        while self.lanes_box.count():
+            it = self.lanes_box.takeAt(0)
+            w = it.widget()
+            if w is not None and w is not self._empty:
+                w.deleteLater()
+        lanes = self._load_lanes() if self.planner_dir else []
+        for lane in lanes:
             self.lanes_box.addWidget(Lane(lane))
+        if not lanes:
+            self.lanes_box.insertWidget(0, self._empty)
+            self._empty.show()
 
-    # ---- Datos de ejemplo (mismo contenido que el mockup SVG) ----
+    def _load_lanes(self):
+        lanes = []
+        try:
+            names = sorted(os.listdir(self.planner_dir))
+        except OSError:
+            return lanes
+        for name in names:
+            d = os.path.join(self.planner_dir, name)
+            if os.path.isdir(d) and name.startswith(LANE_PREFIX):
+                lanes.append(self._load_lane(d, name))
+        return lanes
 
-    def _demo_lanes(self):
-        return [
-            {"name": "Refactor UI Tailwind", "cron": "Cron 02:00 AM",
-             "progress": (2, 4), "cards": [
-                 {"title": "Análisis previo", "status": "ok",
-                  "materials": [("doc", "schema.json"), ("img", "captura.png")],
-                  "messages": [("user", "Prompt maestro del refactor"),
-                               ("ia", "Plan de acción en 4 pasos"),
-                               ("ia", "schema.json leído: 14 endpoints")],
-                  "conv_n": 12,
-                  "tests": [("render_basico", "pass"),
-                            ("a11y_contrast", "pass")],
-                  "summary": "2/2 PASS · duración 38s"},
-                 {"title": "Generar código", "status": "ok",
-                  "materials": [("doc", "component.tsx"),
-                                ("doc", "tailwind.config.js")],
-                  "messages": [("user", "Prompt detallado por componente"),
-                               ("ia", "Código generado: 3 archivos"),
-                               ("ia", "Diff revisado sin observaciones")],
-                  "conv_n": 8,
-                  "tests": [("snapshot_tsx", "pass"), ("unitario_#4", "pass")],
-                  "summary": "2/2 PASS · duración 1m 12s"},
-                 {"title": "Validar tests", "status": "fail",
-                  "materials": [("doc", "tests.spec.js"),
-                                ("img", "error_trace.png")],
-                  "messages": [("user", "Falló integracion_#2, revisá el trace"),
-                               ("ia", "Causa: mock de fetch desactualizado"),
-                               ("ia", "Fix propuesto: regenerar mocks")],
-                  "conv_n": 15,
-                  "tests": [("integracion_#2", "fail"),
-                            ("validacion_schema", "pass")],
-                  "summary": "1/2 PASS · reintentar con fix",
-                  "summary_color": "#ff6b63"},
-                 {"title": "QA automático", "status": "wait",
-                  "materials": [("doc", "bug_report.md"), ("img", "fix_pr.png")],
-                  "messages": [("user", "QA al terminar el paso 3"),
-                               ("ia", "Suite preparada: smoke + regresión"),
-                               ("sys", "En espera del paso anterior")],
-                  "conv_n": 4,
-                  "tests": [("smoke_e2e", "queue"), ("regresion_ui", "queue")],
-                  "summary": "0/2 · se ejecutan al activar el paso"},
-             ]},
-            {"name": "Scraping Productos", "cron": None, "progress": (0, 0),
-             "cards": [
-                 {"title": "Endpoint target", "status": "wait", "compact": True,
-                  "subtitle": "Esperando ejecución manual"},
-                 {"title": "Extracción de datos", "status": "blocked",
-                  "compact": True, "subtitle": "Bloqueado por el paso 1"},
-             ]},
-        ]
+    def _load_lane(self, d, dirname):
+        meta = _read_json(os.path.join(d, "lane.json")) or {}
+        cards = []
+        try:
+            steps = sorted(os.listdir(d))
+        except OSError:
+            steps = []
+        for s in steps:
+            sd = os.path.join(d, s)
+            if os.path.isdir(sd) and s.startswith(STEP_PREFIX):
+                cards.append(self._load_step(sd, s))
+        done = sum(1 for c in cards if c.get("status") == "ok")
+        cron = meta.get("cron")
+        return {"name": meta.get("name") or _pretty_name(dirname, LANE_PREFIX),
+                "cron": f"Cron {cron}" if cron else None,
+                "progress": (done, len(cards)), "dir": d, "cards": cards}
+
+    def _load_step(self, sd, sname):
+        meta = _read_json(os.path.join(sd, "step.json")) or {}
+        card = {"title": meta.get("title") or _pretty_name(sname, STEP_PREFIX),
+                "status": meta.get("status", "wait")}
+        mats = []
+        if os.path.exists(os.path.join(sd, "requerimientos.md")):
+            mats.append(("doc", "requerimientos.md"))
+        archivos = os.path.join(sd, "archivos")
+        try:
+            for f in sorted(os.listdir(archivos)):
+                if not f.startswith("."):
+                    kind = ("img" if os.path.splitext(f)[1].lower() in IMG_EXTS
+                            else "doc")
+                    mats.append((kind, f))
+        except OSError:
+            pass
+        card["materials"] = mats
+        conv = _read_json(os.path.join(sd, "conversacion.json")) or []
+        card["messages"] = [(m.get("role", "sys"), m.get("text", ""))
+                            for m in conv if isinstance(m, dict)][-3:]
+        card["conv_n"] = len(conv)
+        tests = _read_json(os.path.join(sd, "tests.json")) or []
+        card["tests"] = [(t.get("name", "test"), t.get("result", "queue"))
+                         for t in tests if isinstance(t, dict)]
+        if tests:
+            ok = sum(1 for _, r in card["tests"] if r == "pass")
+            card["summary"] = f"{ok}/{len(tests)} PASS"
+            card["summary_color"] = "#7ce495" if ok == len(tests) else "#ff6b63"
+        if not mats and not conv and not tests:
+            card["compact"] = True
+            card["subtitle"] = meta.get("subtitle") or "Esperando definición de pasos"
+        return card
 
     # ---- Acciones ----
 
     def _add_lane(self):
-        self._lane_count += 1
-        lane = {"name": f"Carril {self._lane_count}", "cron": None,
-                "progress": (0, 0),
-                "cards": [{"title": "Nueva tarea", "status": "wait",
-                           "compact": True,
-                           "subtitle": "Esperando definición de pasos"}]}
-        self.lanes_box.addWidget(Lane(lane))
+        if not self.planner_dir:
+            return
+        name, ok = QInputDialog.getText(
+            self, "Nuevo carril de tareas", "Nombre de la tarea:")
+        if not ok:
+            return
+        name = name.strip() or "Nueva tarea"
+        n = 1
+        try:
+            nums = [int(m.group(1)) for d in os.listdir(self.planner_dir)
+                    if (m := re.match(LANE_PREFIX + r"(\d+)", d))]
+            n = max(nums, default=0) + 1
+        except OSError:
+            pass
+        slug = _slugify(name)
+        dname = f"{LANE_PREFIX}{n:03d}" + (f"-{slug}" if slug else "")
+        lane_dir = os.path.join(self.planner_dir, dname)
+        step_dir = os.path.join(lane_dir, STEP_PREFIX + "001")
+        try:
+            os.makedirs(step_dir, exist_ok=True)
+            _write_json(os.path.join(lane_dir, "lane.json"), {"name": name})
+            _write_json(os.path.join(step_dir, "step.json"),
+                        {"title": name, "status": "wait"})
+        except OSError:
+            return
+        self.reload()

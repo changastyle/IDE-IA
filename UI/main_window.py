@@ -33,13 +33,14 @@ import signal as _signal
 from PySide6.QtCore import (Qt, QMimeData, QPoint, Signal, QProcess, QSize,
                             QTimer, QSocketNotifier)
 from PySide6.QtGui import (QDrag, QColor, QPainter, QFont, QAction, QIcon,
-                           QTextCursor, QKeySequence)
+                           QTextCursor, QKeySequence, QPixmap, QPen, QImage)
+from PySide6.QtCore import QRectF, QPointF
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSplitter, QPlainTextEdit, QMenu, QFileDialog,
     QGraphicsDropShadowEffect, QSizePolicy, QTabWidget,
     QDialog, QListWidget, QListWidgetItem, QWidgetAction, QLineEdit,
-    QMessageBox, QProgressBar, QStackedWidget,
+    QMessageBox, QProgressBar, QStackedWidget, QSplashScreen,
 )
 
 from utils.git import (
@@ -1783,7 +1784,9 @@ class MainBody(QWidget):
         # Panel Planner (workflows con agentes IA) en zona izquierda
         from UI.panels.planner_panel import PlannerPanel
         self.planner_panel = PlannerPanel()
-        self.left_zone.add_panel_widget("planner", "Planner", self.planner_panel)
+        pp = self.left_zone.add_panel_widget(
+            "planner", "Planner", self.planner_panel)
+        pp.header.add_action("↻", "Refrescar", self.planner_panel.reload)
         self.left_zone.toggle("planner", False)
 
         # Panel de Git (ramas + grafo) en zona izquierda
@@ -1834,8 +1837,9 @@ class MainBody(QWidget):
 
         # Panel Planner en zona derecha
         self.planner_panel_right = PlannerPanel()
-        self.right_zone.add_panel_widget(
+        ppr = self.right_zone.add_panel_widget(
             "planner", "Planner", self.planner_panel_right)
+        ppr.header.add_action("↻", "Refrescar", self.planner_panel_right.reload)
         self.right_zone.toggle("planner", False)
 
         # Terminal flotante (con pestañas)
@@ -2172,6 +2176,8 @@ class MainBody(QWidget):
         self.git_panel.set_repo(path)
         self.changes_panel.set_repo(path)
         self.stash_panel.set_repo(path)
+        self.planner_panel.set_repo(path)
+        self.planner_panel_right.set_repo(path)
         if hasattr(self, "git_listener"):
             self.git_listener.set_repo(path)
 
@@ -2181,7 +2187,7 @@ class UIMainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("UI nueva — IDE IA")
+        self.setWindowTitle("NG-Studio")
         self.resize(1400, 860)
         # Icono de la ventana
         icon_path = os.path.join(os.path.dirname(os.path.dirname(
@@ -2552,6 +2558,95 @@ def _excepthook(exc_type, exc, tb):
         pass
 
 
+def _splash_font(pref):
+    """Primera familia 'de diseñador' disponible en el sistema; si no, default."""
+    from PySide6.QtGui import QFontDatabase
+    fams = set(QFontDatabase.families())
+    for fam in pref:
+        if fam in fams:
+            return fam
+    return QFont().family()
+
+
+def _splash_pixmap():
+    """Splash de inicio: arte Thor generado por IA (splash/ng-studio-logo.png);
+    si falta el PNG, cae a la escena SVG dorada pintada a mano."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hero = os.path.join(root, "splash", "ng-studio-logo.png")
+    if os.path.exists(hero):
+        img = QImage(hero)
+        if not img.isNull():
+            pm = QPixmap.fromImage(img.scaled(
+                540, 360, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+            if pm.size() != QSize(540, 360):
+                pm = pm.copy((pm.width() - 540) // 2,
+                             (pm.height() - 360) // 2, 540, 360)
+            return pm
+
+    pm = QPixmap(520, 360)
+    pm.fill(QColor("#0a0a0c"))
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    gold = QColor("#d4af37")
+    design = _splash_font(("Futura", "Avenir Next", "Optima", "Gill Sans"))
+    serif = _splash_font(("Didot", "Hoefler Text", "Baskerville", "Optima"))
+
+    # Marco dorado tenue
+    p.setPen(QPen(QColor(212, 175, 55, 60), 1))
+    p.drawRect(pm.rect().adjusted(1, 1, -2, -2))
+
+    # Emblema Thor desde el SVG (Thor en la roca + anillo de rayos)
+    logo_path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "splash", "ng-logo.svg")
+    if os.path.exists(logo_path):
+        from PySide6.QtSvg import QSvgRenderer
+        QSvgRenderer(logo_path).render(p, QRectF(100, 26, 320, 160))
+    else:  # fallback pintado si falta el SVG
+        f = QFont(serif)
+        f.setBold(True)
+        f.setPixelSize(96)
+        p.setFont(f)
+        p.setPen(gold)
+        p.drawText(QRectF(0, 40, 520, 130), Qt.AlignCenter, "NG")
+
+    # "NG Studio" en tipografía de diseñador, tracking amplio
+    f = QFont(design)
+    f.setPixelSize(30)
+    f.setLetterSpacing(QFont.PercentageSpacing, 165)
+    p.setFont(f)
+    p.setPen(gold)
+    p.drawText(QRectF(0, 214, 520, 42), Qt.AlignCenter, "NG Studio")
+
+    # Firma en serif itálica (estilo editorial)
+    f = QFont(serif)
+    f.setItalic(True)
+    f.setPixelSize(14)
+    f.setLetterSpacing(QFont.PercentageSpacing, 110)
+    p.setFont(f)
+    p.setPen(QColor(212, 175, 55, 170))
+    p.drawText(QRectF(0, 318, 520, 22), Qt.AlignCenter,
+               "Design by Nicolas Grossi")
+    p.end()
+    return pm
+
+
+def _play_startup_sound():
+    """Chime de inicio: splash/sonido.mp3 (o chime.aiff) o sonido del sistema."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for path in (os.path.join(root, "splash", "sonido.mp3"),
+                 os.path.join(root, "splash", "chime.aiff"),
+                 "/System/Library/Sounds/Glass.aiff",
+                 "/System/Library/Sounds/Ping.aiff"):
+        if os.path.exists(path):
+            try:
+                subprocess.Popen(["afplay", "-v", "0.55", path],
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+            return
+
+
 def main():
     sys.excepthook = _excepthook
     app = QApplication(sys.argv)
@@ -2562,8 +2657,15 @@ def main():
         os.path.abspath(__file__))), "iconos", "app.svg")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
+    # Splash: negro con dorado, sobre la ventana principal
+    _play_startup_sound()
+    splash = QSplashScreen(_splash_pixmap())
+    splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    splash.show()
+    app.processEvents()
     w = UIMainWindow()
     w.show()
+    QTimer.singleShot(1500, lambda: splash.finish(w))
     sys.exit(app.exec())
 
 

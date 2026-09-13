@@ -1,0 +1,151 @@
+<svg width="320" height="160" viewBox="0 0 320 160" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="plata" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f4f6f9"/>
+      <stop offset="0.45" stop-color="#c7cdd6"/>
+      <stop offset="1" stop-color="#8f97a3"/>
+    </linearGradient>
+    <linearGradient id="plata2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c3cad4"/>
+      <stop offset="1" stop-color="#7e8794"/>
+    </linearGradient>
+    <linearGradient id="oro" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f0d060"/>
+      <stop offset="1" stop-color="#8f6f1f"/>
+    </linearGradient>
+    <linearGradient id="rayo" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe08a"/>
+      <stop offset="1" stop-color="#d4af37"/>
+    </linearGradient>
+    <linearGradient id="roca" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a4048"/>
+      <stop offset="1" stop-color="#171a1f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#d4af37" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#d4af37" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- ============ THOR EN LA ROCA, EL MAR ============ -->
+
+  <!-- Capa dorada al viento -->
+  <path d="M70 42 Q52 62 48 88 Q46 106 38 118 L50 113 L48 122 L60 113
+           L62 120 L72 110 L74 117 L82 106 Q78 76 88 44 Z"
+        fill="url(#oro)" stroke="#a8862a" stroke-width="0.7"/>
+
+  <!-- Roca -->
+  <path d="M26 154 L36 136 L46 126 L56 121 L100 121 L110 127 L118 140 L124 154 Z"
+        fill="url(#roca)" stroke="#0d0f12" stroke-width="0.8"/>
+  <path d="M46 126 L56 121 L100 121 L110 127" fill="none"
+        stroke="#8f97a3" stroke-width="1" stroke-opacity="0.5"/>
+  <path d="M60 128 L66 140 M92 125 L88 138" stroke="#0d0f12"
+        stroke-width="0.7" stroke-opacity="0.6"/>
+
+  <!-- Piernas y botas -->
+  <path d="M73 92 L69 105 L64 117" fill="none" stroke="#939ba6"
+        stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M83 92 L87 105 L93 117" fill="none" stroke="#939ba6"
+        stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M58.5 114.5 H69 V121 H56.5 Z" fill="#7e8794" stroke="#6b7280" stroke-width="0.5"/>
+  <path d="M88 114.5 H98.5 L100.5 121 H88 Z" fill="#7e8794" stroke="#6b7280" stroke-width="0.5"/>
+
+  <!-- Torso de guerrero: hombros anchos, pecho de acero -->
+  <rect x="75" y="36" width="8" height="9" fill="#939ba6"/>
+  <path d="M66 44 L90 44 L87 60 L85 76 L69 76 L67 60 Z"
+        fill="url(#plata)" stroke="#6b7280" stroke-width="0.7"/>
+  <path d="M71 52 H87" stroke="#6b7280" stroke-width="0.6" stroke-opacity="0.5"/>
+  <rect x="67.5" y="74" width="20" height="4" fill="#d4af37"/>
+  <path d="M68 78 H87 L90 92 L65 92 Z" fill="url(#plata2)" stroke="#6b7280" stroke-width="0.6"/>
+
+  <!-- Brazo izquierdo -->
+  <path d="M68 48 L64 60 L66.5 70" fill="none" stroke="#939ba6"
+        stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="66.5" cy="72" r="3.8" fill="#c3cad4" stroke="#6b7280" stroke-width="0.6"/>
+
+  <!-- Brazo derecho alzado con Mjölnir -->
+  <path d="M87 48 L96 40 L100 31" fill="none" stroke="#939ba6"
+        stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="101" cy="29" r="4.2" fill="#c3cad4" stroke="#6b7280" stroke-width="0.6"/>
+  <rect x="99.7" y="13" width="2.8" height="14" fill="#a8862a"/>
+  <rect x="98.9" y="17.5" width="4.4" height="2.2" fill="#d4af37"/>
+  <path d="M91 5.5 H111 L113.5 8.5 V13.5 L111 16.5 H91 L88.5 13.5 V8.5 Z"
+        fill="url(#plata)" stroke="#6b7280" stroke-width="0.7"/>
+  <path d="M114 8 L120 11 L117 13.5 L123 17" fill="none" stroke="#ffe08a"
+        stroke-width="1.3" stroke-linecap="round"/>
+
+  <!-- Cabeza: yelmo alado, barba de guerrero -->
+  <circle cx="79" cy="30" r="7.5" fill="url(#plata)" stroke="#6b7280" stroke-width="0.6"/>
+  <path d="M72.5 30.5 Q79 44 85.5 30.5 Q79 35.5 72.5 30.5 Z"
+        fill="#c3cad4" stroke="#6b7280" stroke-width="0.5"/>
+  <path d="M70.5 26.5 Q79 14.5 87.5 26.5 Q79 22 70.5 26.5 Z"
+        fill="url(#plata2)" stroke="#6b7280" stroke-width="0.6"/>
+  <path d="M71 25 L62.5 15.5 L69.5 23.5 Z" fill="#d4af37"/>
+  <path d="M87 25 L95.5 15.5 L88.5 23.5 Z" fill="#d4af37"/>
+
+  <!-- El mar, de costa a costa -->
+  <path d="M0 139 Q8 134 16 139 T32 139 T48 139 T64 139 T80 139 T96 139
+           T112 139 T128 139 T144 139 T160 139 T176 139 T192 139 T208 139
+           T224 139 T240 139 T256 139 T272 139 T288 139 T304 139 T320 139
+           L320 160 L0 160 Z" fill="#20272e"/>
+  <path d="M0 147 Q10 142 20 147 T40 147 T60 147 T80 147 T100 147 T120 147
+           T140 147 T160 147 T180 147 T200 147 T220 147 T240 147 T260 147
+           T280 147 T300 147 T320 147 L320 160 L0 160 Z" fill="#2b353f"/>
+  <path d="M0 147 Q10 142 20 147 T40 147 T60 147 T80 147 T100 147 T120 147
+           T140 147 T160 147 T180 147 T200 147 T220 147 T240 147 T260 147
+           T280 147 T300 147 T320 147" fill="none" stroke="#9aa4b0"
+        stroke-width="1" stroke-opacity="0.45"/>
+  <path d="M0 154 Q12 150 24 154 T48 154 T72 154 T96 154 T120 154 T144 154
+           T168 154 T192 154 T216 154 T240 154 T264 154 T288 154 T312 154
+           L320 154 L320 160 L0 160 Z" fill="#161b21"/>
+  <circle cx="120" cy="143" r="2.4" fill="#9aa4b0" fill-opacity="0.6"/>
+  <circle cx="127" cy="148" r="1.7" fill="#9aa4b0" fill-opacity="0.5"/>
+  <circle cx="113" cy="149" r="1.5" fill="#9aa4b0" fill-opacity="0.5"/>
+  <circle cx="30" cy="146" r="2" fill="#9aa4b0" fill-opacity="0.5"/>
+
+  <!-- ============ ANILLO DE RAYOS ============ -->
+  <circle cx="225" cy="80" r="44" fill="url(#glow)"/>
+  <circle cx="225" cy="80" r="46" fill="none" stroke="#d4af37"
+          stroke-opacity="0.9" stroke-width="1.5"/>
+  <circle cx="225" cy="80" r="52" fill="none" stroke="#d4af37"
+          stroke-opacity="0.35" stroke-width="0.8" stroke-dasharray="3 5"/>
+
+  <!-- 8 rayos grandes -->
+  <g fill="url(#rayo)" stroke="#a8862a" stroke-width="0.6" stroke-linejoin="round">
+    <path d="M229 4 L213 24 L221 26 L209 44 L243 14 L233 12 Z"/>
+    <path d="M229 4 L213 24 L221 26 L209 44 L243 14 L233 12 Z" transform="rotate(45 225 80)"/>
+    <path d="M229 4 L213 24 L221 26 L209 44 L243 14 L233 12 Z" transform="rotate(90 225 80)"/>
+    <path d="M229 4 L213 24 L221 26 L209 44 L243 14 L233 12 Z" transform="rotate(135 225 80)"/>
+    <path d="M229 4 L213 24 L221 26 L209 44 L243 14 L233 12 Z" transform="rotate(180 225 80)"/>
+    <path d="M229 4 L213 24 L221 26 L209 44 L243 14 L233 12 Z" transform="rotate(225 225 80)"/>
+    <path d="M229 4 L213 24 L221 26 L209 44 L243 14 L233 12 Z" transform="rotate(270 225 80)"/>
+    <path d="M229 4 L213 24 L221 26 L209 44 L243 14 L233 12 Z" transform="rotate(315 225 80)"/>
+  </g>
+
+  <!-- Remaches entre rayos -->
+  <g fill="#d4af37" fill-opacity="0.75">
+    <path d="M225 17.5 L228.2 21 L225 24.5 L221.8 21 Z" transform="rotate(22.5 225 80)"/>
+    <path d="M225 17.5 L228.2 21 L225 24.5 L221.8 21 Z" transform="rotate(67.5 225 80)"/>
+    <path d="M225 17.5 L228.2 21 L225 24.5 L221.8 21 Z" transform="rotate(112.5 225 80)"/>
+    <path d="M225 17.5 L228.2 21 L225 24.5 L221.8 21 Z" transform="rotate(157.5 225 80)"/>
+    <path d="M225 17.5 L228.2 21 L225 24.5 L221.8 21 Z" transform="rotate(202.5 225 80)"/>
+    <path d="M225 17.5 L228.2 21 L225 24.5 L221.8 21 Z" transform="rotate(247.5 225 80)"/>
+    <path d="M225 17.5 L228.2 21 L225 24.5 L221.8 21 Z" transform="rotate(292.5 225 80)"/>
+    <path d="M225 17.5 L228.2 21 L225 24.5 L221.8 21 Z" transform="rotate(337.5 225 80)"/>
+  </g>
+
+  <!-- Mjölnir central plateado con NG grabado -->
+  <g transform="translate(225 80) scale(0.82) translate(-120 -85)">
+    <g stroke="#6b7280" stroke-width="0.8">
+      <path d="M88 44 H152 L157 50 V68 L152 74 H88 L83 68 V50 Z" fill="url(#plata)"/>
+      <rect x="114" y="74" width="12" height="7" fill="#b6bdc7"/>
+      <rect x="115.5" y="81" width="9" height="33" fill="url(#plata2)"/>
+    </g>
+    <rect x="113.5" y="88" width="13" height="2.6" fill="#d4af37"/>
+    <rect x="113.5" y="94" width="13" height="2.6" fill="#d4af37"/>
+    <path d="M120 113 L127.5 119.5 L120 126 L112.5 119.5 Z"
+          fill="#d4af37" stroke="#a8862a" stroke-width="0.6"/>
+    <text x="120" y="66.5" font-family="Didot" font-weight="700" font-size="21"
+          letter-spacing="1" fill="#d4af37" text-anchor="middle">NG</text>
+  </g>
+</svg>

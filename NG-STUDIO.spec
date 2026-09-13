@@ -5,7 +5,7 @@ a = Analysis(
     ['ng-studio-app.py'],
     pathex=['.'],
     binaries=[],
-    datas=[('UI', 'UI'), ('Skills-py', 'Skills-py'), ('Voice', 'Voice'), ('utils', 'utils'), ('iconos', 'iconos'), ('conversaciones', 'conversaciones'), ('README', 'README'), ('CI-CD-LOCAL/version-macos.md', 'CI-CD-LOCAL')],
+    datas=[('UI', 'UI'), ('Skills-py', 'Skills-py'), ('Voice', 'Voice'), ('utils', 'utils'), ('iconos', 'iconos'), ('splash', 'splash'), ('conversaciones', 'conversaciones'), ('README', 'README'), ('CI-CD-LOCAL/version-macos.md', 'CI-CD-LOCAL')],
     hiddenimports=['PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui', 'requests', 'pyte', 'pyte.streams'],
     hookspath=[],
     hooksconfig={},
