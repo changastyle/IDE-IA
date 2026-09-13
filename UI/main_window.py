@@ -1897,15 +1897,16 @@ class MainBody(QWidget):
 
     def _on_committed(self, push_after):
         """Tras un commit: refrescar top bar + git, y push si corresponde."""
-        self.top_bar._refresh_git()
+        win = self.window()
+        win.top_bar._refresh_git()
         self.git_panel.refresh()
-        if push_after and self.top_bar.repo_path:
-            ok, out = push(self.top_bar.repo_path)
-            self.statusBar().showMessage(
+        if push_after and win.top_bar.repo_path:
+            ok, out = push(win.top_bar.repo_path)
+            win.statusBar().showMessage(
                 ("✔ " if ok else "✖ ") + out.replace("\n", " ")[:120], 5000)
 
     def _generate_msg(self):
-        self.statusBar().showMessage(
+        self.window().statusBar().showMessage(
             "✨ Generate: pendiente de conectar a la IA", 3000)
 
     def _add_chat_header_ctrls(self, panel, chat):
@@ -1976,6 +1977,36 @@ class MainBody(QWidget):
             take_r = sizes[2]
             take_c = need - take_r
         sp.setSizes([sizes[0] + need, sizes[1] - take_c, sizes[2] - take_r])
+
+    def ensure_planner_width(self):
+        """Al abrir el Planner (izq), su zona ocupa ≥70% del ancho total."""
+        self._ensure_zone_width(0)
+
+    def ensure_planner_width_right(self):
+        """Al abrir el Planner (der), su zona ocupa ≥70% del ancho total."""
+        self._ensure_zone_width(2)
+
+    def _ensure_zone_width(self, idx):
+        """Garantiza que la zona idx del splitter ocupe ≥70% del ancho."""
+        sp = self.main_splitter
+        sizes = sp.sizes()
+        if len(sizes) < 3 or sum(sizes) <= 0:
+            return
+        target = int(sum(sizes) * 0.7)
+        if sizes[idx] >= target:
+            return
+        need = target - sizes[idx]
+        new_sizes = list(sizes)
+        new_sizes[idx] = target
+        for i in (0, 1, 2):
+            if i == idx:
+                continue
+            take = min(new_sizes[i], need)
+            new_sizes[i] -= take
+            need -= take
+            if need <= 0:
+                break
+        sp.setSizes(new_sizes)
 
     def _open_from_chat(self, rel_path):
         """Abre en el editor un archivo tocado por la IA (path relativo)."""
@@ -2224,7 +2255,9 @@ class UIMainWindow(QMainWindow):
         self.hotbar_left.btns["chat"].toggled.connect(
             lambda on: self.body.left_zone.toggle("chat", on))
         self.hotbar_left.btns["planner"].toggled.connect(
-            lambda on: self.body.left_zone.toggle("planner", on))
+            lambda on: (self.body.left_zone.toggle("planner", on),
+                        QTimer.singleShot(0, self.body.ensure_planner_width)
+                        if on else None))
         self.hotbar_left.btns["term"].toggled.connect(
             lambda on: self.body.toggle_terminal(on))
         # Git de la hotbar → panel de Git (ramas + grafo)
@@ -2244,7 +2277,9 @@ class UIMainWindow(QMainWindow):
                         QTimer.singleShot(0, self.body.ensure_right_chat_width)
                         if on else None))
         self.hotbar_right.btns["planner"].toggled.connect(
-            lambda on: self.body.right_zone.toggle("planner", on))
+            lambda on: (self.body.right_zone.toggle("planner", on),
+                        QTimer.singleShot(0, self.body.ensure_planner_width_right)
+                        if on else None))
         self.hotbar_right.btns["term"].toggled.connect(
             lambda on: self.body.toggle_terminal(on))
         # Top bar → acciones
