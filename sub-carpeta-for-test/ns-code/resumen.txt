@@ -101,3 +101,20 @@ Es decir, una tarea de limpieza: verificar qué contienen esos dos archivos suel
 
 ¿Querés que los lea ahora mismo y te diga si sirven para algo o se pueden borrar directamente?
 
+[09:36:52] sub-carpeta-for-test-prompt-4
+Prompt: que hace este proyecto??
+Respuesta: Es un **juego de Snake (la serpiente clásica)** hecho con HTML5 Canvas y JavaScript vanilla, sin librerías externas. 🐍
+
+**Lo que tiene:**
+
+- **Juego completo**: serpiente de 20×20 celdas que crece al comer, colisiones con paredes y consigo misma, Game Over con overlay y botón de reinicio.
+- **Récord persistente**: guarda tu mejor puntuación en `localStorage` (`snake_best`).
+- **Sonido**: efectos generados con Web Audio API (comer, comida dorada, subir de nivel, Game Over) — sin archivos de audio externos.
+- **Niveles de velocidad**: cada 50 puntos el juego acelera y sube de nivel.
+- **Editor de niveles**: una página (`html/editor-de-mapas.html`) donde podés pintar y borrar muros con clic o arrastre, guardar tus niveles en `localStorage` y jugarlos desde el juego principal.
+- **Controles**: flechas del teclado, botón de reinicio y swipe táctil para móvil.
+
+**Estructura**: `index.html` / `snake.html` son las páginas del juego (comparten `styles.css` y `snake.js`, que es el "cerebro" de todo), más la carpeta `audio/` con los sonidos y `js/` con la lógica del editor.
+
+En resumen: un Snake pulido con récords, sonido y la posibilidad de crear y jugar tus propios niveles con muros.
+

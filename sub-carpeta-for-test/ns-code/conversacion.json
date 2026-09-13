@@ -90,5 +90,20 @@
    "model": "glm-5.3-flash",
    "elapsed": 2
   }
+ },
+ {
+  "role": "user",
+  "content": "que hace este proyecto??"
+ },
+ {
+  "role": "assistant",
+  "content": "Es un **juego de Snake (la serpiente clásica)** hecho con HTML5 Canvas y JavaScript vanilla, sin librerías externas. 🐍\n\n**Lo que tiene:**\n\n- **Juego completo**: serpiente de 20×20 celdas que crece al comer, colisiones con paredes y consigo misma, Game Over con overlay y botón de reinicio.\n- **Récord persistente**: guarda tu mejor puntuación en `localStorage` (`snake_best`).\n- **Sonido**: efectos generados con Web Audio API (comer, comida dorada, subir de nivel, Game Over) — sin archivos de audio externos.\n- **Niveles de velocidad**: cada 50 puntos el juego acelera y sube de nivel.\n- **Editor de niveles**: una página (`html/editor-de-mapas.html`) donde podés pintar y borrar muros con clic o arrastre, guardar tus niveles en `localStorage` y jugarlos desde el juego principal.\n- **Controles**: flechas del teclado, botón de reinicio y swipe táctil para móvil.\n\n**Estructura**: `index.html` / `snake.html` son las páginas del juego (comparten `styles.css` y `snake.js`, que es el \"cerebro\" de todo), más la carpeta `audio/` con los sonidos y `js/` con la lógica del editor.\n\nEn resumen: un Snake pulido con récords, sonido y la posibilidad de crear y jugar tus propios niveles con muros.",
+  "usage": {
+   "prompt": 4704,
+   "completion": 360,
+   "tps": 78.5,
+   "model": "glm-5.3-flash",
+   "elapsed": 4
+  }
  }
 ]

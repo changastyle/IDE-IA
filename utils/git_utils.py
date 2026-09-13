@@ -4,11 +4,12 @@
 - Log de todas las ramas con refs, parents, fecha y autor.
 - Cálculo de "lanes" (carriles) para dibujar el grafo estilo IntelliJ.
 """
+import difflib
+import datetime
 import subprocess
 import os
 
-PALETTE = ["#3574f0", "#2ec4a5", "#e8804a", "#a78bfa", "#e05561",
-           "#32ade6", "#22c55e", "#eab308"]
+from utils.branch_colors import PALETTE, get_colors
 
 
 def find_repo_root(path):
@@ -30,10 +31,32 @@ class GitUtils:
         try:
             r = subprocess.run(
                 ["git", "-C", self.repo, *args],
-                capture_output=True, text=True, timeout=10)
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=10)
             return r.stdout if r.returncode == 0 else ""
         except (OSError, subprocess.TimeoutExpired):
             return ""
+
+    def _git_ok(self, *args):
+        """(ok, salida+error) — para acciones que reportan resultado."""
+        try:
+            r = subprocess.run(
+                ["git", "-C", self.repo, *args],
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30)
+            return r.returncode == 0, (r.stderr or r.stdout or "").strip()
+        except (OSError, subprocess.TimeoutExpired) as ex:
+            return False, str(ex)
+
+    def _git_stdin(self, *args, data=""):
+        try:
+            r = subprocess.run(
+                ["git", "-C", self.repo, *args],
+                input=data, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30)
+            return r.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
 
     def is_repo(self):
         return bool(self.repo) and os.path.isdir(
@@ -59,7 +82,7 @@ class GitUtils:
         donde `branch` es la rama local de la que este commit es tip.
         """
         fmt = "%H%x1f%h%x1f%P%x1f%d%x1f%ad%x1f%an%x1f%s"
-        out = self._git("log", "--all", f"-n{limit}",
+        out = self._git("log", "--all", "--topo-order", f"-n{limit}",
                         "--date=format:%d/%m/%y, %H:%M",
                         f"--pretty=format:{fmt}")
         commits = []
@@ -115,7 +138,8 @@ class GitUtils:
         """
         commits, tips = self.log_all(limit)
         current = self.current_branch()
-        lane_of_branch, colors = {}, {}
+        lane_of_branch = {}
+        colors = self.branch_colors()  # persistentes, compartidos
         next_lane = 0
         # main/master primero (carril 0), luego el resto por fecha del tip
         # (la rama con tip más antiguo va primero, la más nueva al final)
@@ -123,60 +147,47 @@ class GitUtils:
         main_branches = [b for b in tips if b in main_names]
         other_branches = [b for b in tips if b not in main_names]
         # Fecha del tip de cada rama para ordenar por antigüedad
-        tip_date = {}
-        for c in commits:
-            if c["hash"] in tips.values() and c["branch"]:
-                tip_date[c["branch"]] = c["date"]
+        date_of = {c["hash"]: c["date"] for c in commits}
+        tip_date = {b: date_of.get(h, "") for b, h in tips.items()}
         other_branches.sort(key=lambda b: tip_date.get(b, ""))
         ordered = main_branches + other_branches
         for b in ordered:
             if b not in lane_of_branch:
                 lane_of_branch[b] = next_lane
-                colors[b] = PALETTE[next_lane % len(PALETTE)]
                 next_lane += 1
-        # Un commit puede ser tip de varias ramas (p. ej. dev y puto en el
-        # mismo hash): el nodo se dibuja en el carril de la rama actual si
-        # participa; si no, de la primera en orden (main, luego por fecha).
-        lane_at_tip = {}
+        # Tronco: main/master, si no la rama actual, si no la primera.
+        trunk = next((b for b in tips if b in ("main", "master")),
+                     current if current in tips
+                     else next(iter(tips), None))
+        trunk_lane = lane_of_branch.get(trunk, 0)
+        trunk_tip = tips.get(trunk, "")
+        # Commits exclusivos de cada rama (alcanzables desde su tip pero
+        # no desde el tronco): van al carril de la rama. La historia
+        # compartida queda en el carril del tronco — así main corre de
+        # punta a punta como en IntelliJ. Si un commit lo reclaman varias
+        # ramas (tips compartidos), gana la primera en `ordered`.
+        claimed = {}
         for b in ordered:
-            h = tips.get(b)
-            if h is None:
+            if b == trunk or not trunk_tip:
                 continue
-            if h not in lane_at_tip or b == current:
-                lane_at_tip[h] = lane_of_branch[b]
+            tip_h = tips.get(b)
+            if not tip_h:
+                continue
+            out = self._git("rev-list", tip_h, "--not", trunk_tip)
+            for hh in out.splitlines():
+                hh = hh.strip()
+                if hh and hh not in claimed:
+                    claimed[hh] = lane_of_branch[b]
         lane_of = {}
         edges = []
         for c in commits:
             h = c["hash"]
-            if h in lane_at_tip:
-                lane_of[h] = lane_at_tip[h]
-            elif h not in lane_of:
-                lane = None
-                for p in c["parents"]:
-                    if p in lane_of:
-                        lane = lane_of[p]
-                        break
-                if lane is None:
-                    # heredar de un hijo (fork): el commit es parent de otro
-                    for other in commits:
-                        if h in other["parents"] and other["hash"] in lane_of:
-                            lane = lane_of[other["hash"]]
-                            break
-                if lane is None:
-                    lane = next_lane
-                    next_lane += 1
-                lane_of[h] = lane
+            lane_of[h] = claimed.get(h, trunk_lane)
             for p in c["parents"]:
                 edges.append((h, p))
-            if c["branch"] and c["branch"] not in colors:
-                colors[c["branch"]] = colors.get(
-                    current, PALETTE[0])
         # Fila base de cada rama (merge-base con el tronco) para dibujar
         # el rail de ramas que aún no tienen commits propios.
         row_of_c = {cc["hash"]: i for i, cc in enumerate(commits)}
-        trunk = next((b for b in tips if b in ("main", "master")),
-                     current if current in tips
-                     else next(iter(tips), None))
         branch_base = {}
         for b, tip_h in tips.items():
             if b == trunk or tip_h not in row_of_c:
@@ -187,7 +198,8 @@ class GitUtils:
         return {"commits": commits, "lane_of": lane_of, "edges": edges,
                 "lane_of_branch": lane_of_branch, "colors": colors,
                 "current": current, "tips": tips,
-                "branch_base": branch_base}
+                "branch_base": branch_base,
+                "head_hash": tips.get(current)}
 
     def branch_commits(self, branch, limit=50):
         """Commits alcanzables desde una rama (más nuevos primero)."""
@@ -205,6 +217,220 @@ class GitUtils:
 
     def checkout(self, branch):
         return self._git("checkout", branch)
+
+    def _branch_births(self):
+        """{rama: ts de creación} vía reflog — distingue ramas recreadas."""
+        births = {}
+        for b in self.branches():
+            out = self._git("reflog", "show", b, "--format=%ct")
+            ts = out.strip().splitlines()[-1].strip() if out.strip() else ""
+            if not ts:
+                ts = self._git("log", "-1", "--format=%ct", b).strip()
+            births[b] = ts or "0"
+        return births
+
+    def branch_colors(self):
+        """{rama: color} persistente y único (ng-studio/colores-branches/)."""
+        return get_colors(self.repo, self._branch_births())
+
+    def branch_color(self, branch):
+        """Color persistente de la rama."""
+        return self.branch_colors().get(branch, PALETTE[0])
+
+    # ---- changes / commit parcial ----
+    def status(self):
+        """(cambiados, sin trackear) — paths relativos al repo."""
+        out = self._git("status", "--porcelain", "-uall")
+        changed, untracked = [], []
+        for line in out.splitlines():
+            if len(line) < 4:
+                continue
+            st, path = line[:2], line[3:].strip()
+            if " -> " in path:
+                path = path.split(" -> ", 1)[1]
+            if "__pycache__" in path or path.endswith(".pyc"):
+                continue  # basura de python: no mostrar
+            if st.strip() == "??":
+                untracked.append(path)
+            elif st.strip():
+                changed.append(path)
+        return changed, untracked
+
+    def head_content(self, path):
+        """Contenido del archivo en HEAD ("" si no existe)."""
+        return self._git("show", f"HEAD:{path}")
+
+    def work_content(self, path):
+        """Contenido actual del archivo en el working tree."""
+        try:
+            with open(os.path.join(self.repo, path), "r",
+                      encoding="utf-8", errors="replace") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    def diff_rows(self, path):
+        """Filas lado a lado HEAD vs working tree.
+
+        [{kind, left_n, left, right_n, right}] — kind: 'ctx'|'mod'|'add'|'del'.
+        Las filas 'add' y 'mod' son las seleccionables (checkboxes).
+        """
+        a = self.head_content(path).splitlines()
+        b = self.work_content(path).splitlines()
+        if "\x00" in "".join(a[:40]) or "\x00" in "".join(b[:40]):
+            return []  # binario (pyc, imagen, etc.): no hay diff de líneas
+        sm = difflib.SequenceMatcher(a=a, b=b, autojunk=False)
+        rows = []
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                for k in range(i2 - i1):
+                    rows.append({"kind": "ctx", "left_n": i1 + k + 1,
+                                 "left": a[i1 + k], "right_n": j1 + k + 1,
+                                 "right": b[j1 + k]})
+            elif tag == "replace":
+                li, ri = i1, j1
+                while li < i2 or ri < j2:
+                    if li < i2 and ri < j2:
+                        rows.append({"kind": "mod", "left_n": li + 1,
+                                     "left": a[li], "right_n": ri + 1,
+                                     "right": b[ri]})
+                        li += 1
+                        ri += 1
+                    elif li < i2:
+                        rows.append({"kind": "del", "left_n": li + 1,
+                                     "left": a[li], "right_n": None,
+                                     "right": ""})
+                        li += 1
+                    else:
+                        rows.append({"kind": "add", "left_n": None,
+                                     "left": "", "right_n": ri + 1,
+                                     "right": b[ri]})
+                        ri += 1
+            elif tag == "delete":
+                for i in range(i1, i2):
+                    rows.append({"kind": "del", "left_n": i + 1,
+                                 "left": a[i], "right_n": None, "right": ""})
+            elif tag == "insert":
+                for j in range(j1, j2):
+                    rows.append({"kind": "add", "left_n": None, "left": "",
+                                 "right_n": j + 1, "right": b[j]})
+        return rows
+
+    def blame(self, path, rev=None):
+        """{nro_de_línea: (fecha dd/mm/yy, autor)} — del working tree o de `rev`."""
+        args = ["blame", "--porcelain"]
+        if rev:
+            args.append(rev)
+        args += ["--", path]
+        out = self._git(*args)
+        meta = {}  # sha → (fecha, autor)
+        rows = {}
+        cur_sha = cur_final = None
+        for line in out.splitlines():
+            if line.startswith("\t"):
+                if cur_final is not None:
+                    rows[cur_final] = meta.get(cur_sha, ("", ""))
+                    cur_final = None
+                continue
+            parts = line.split(" ", 3)
+            if len(parts) >= 3 and len(parts[0]) == 40 \
+               and parts[1].isdigit() and parts[2].isdigit():
+                cur_sha, cur_final = parts[0], int(parts[2])
+            elif line.startswith("author "):
+                a, d = meta.get(cur_sha, ("", ""))
+                meta[cur_sha] = (a or line[7:], d)
+            elif line.startswith("author-time "):
+                try:
+                    ts = int(line[12:])
+                except ValueError:
+                    continue
+                ds = datetime.datetime.fromtimestamp(ts).strftime("%d/%m/%y")
+                a, _ = meta.get(cur_sha, ("", ""))
+                meta[cur_sha] = (a, ds)
+        return rows
+
+    def file_last_mod(self, path):
+        """(fecha dd/mm/yy, hash corto) del último commit que tocó el archivo."""
+        out = self._git("log", "-1", "--format=%h %ad",
+                        "--date=format:%d/%m/%y", "--", path)
+        parts = out.strip().split(" ", 1)
+        return (parts[1], parts[0]) if len(parts) == 2 else ("", "")
+
+    def reset_index(self):
+        self._git("reset", "--mixed", "-q")
+
+    def stage_files(self, paths):
+        if paths:
+            self._git("add", "--", *paths)
+
+    def stage_content(self, path, content):
+        """Stagea `content` para `path` (commit parcial: solo líneas elegidas).
+
+        Las borradas del HEAD se aplican siempre; las agregadas/modificadas
+        según `content`. Genera un patch y lo aplica al index.
+        """
+        a = self.head_content(path).splitlines(keepends=True)
+        b = content.splitlines(keepends=True)
+        if a and not a[-1].endswith("\n"):
+            a[-1] += "\n"
+        if b and not b[-1].endswith("\n"):
+            b[-1] += "\n"
+        patch = "".join(difflib.unified_diff(
+            a, b, fromfile=f"a/{path}", tofile=f"b/{path}"))
+        if patch:
+            self._git_stdin("apply", "--cached", "--whitespace=nowarn",
+                            data=patch)
+
+    def commit(self, message, amend=False):
+        """Commit del index. Con amend y mensaje vacío → --no-edit."""
+        if amend and not message:
+            return self._git_ok("commit", "--amend", "--no-edit")
+        args = ["commit", "-m", message]
+        if amend:
+            args.append("--amend")
+        return self._git_ok(*args)
+
+    # ---- stash (el bolsillo) ----
+    def stash_list(self):
+        """[{index, sel, msg, date, files}] — entradas del stash, 0 = última."""
+        out = self._git("stash", "list", "--format=%gd%x1f%gs%x1f%ct")
+        entries = []
+        for line in out.splitlines():
+            parts = line.split("\x1f")
+            if len(parts) != 3:
+                continue
+            sel, msg, ts = parts
+            idx = sel.split("{", 1)[1].rstrip("}") if "{" in sel else sel
+            date = ""
+            try:
+                date = datetime.datetime.fromtimestamp(
+                    int(ts)).strftime("%d/%m %H:%M")
+            except (ValueError, OSError):
+                pass
+            files = [f.strip() for f in self._git(
+                "stash", "show", "--include-untracked", "--name-only",
+                sel).splitlines() if f.strip()]
+            entries.append({"index": int(idx), "sel": sel, "msg": msg,
+                            "date": date, "files": files})
+        return entries
+
+    def stash_push(self):
+        """Guarda todos los cambios (incluye sin trackear) en el stash."""
+        return self._git_ok("stash", "push", "-u")
+
+    def stash_restore(self, index, paths):
+        """Recupera del stash los archivos dados (los untracked vienen de ^3)."""
+        sel = f"stash@{{{index}}}"
+        ok_all = True
+        for p in paths:
+            ok = self._git_stdin("checkout", sel, "--", p)
+            if not ok:
+                ok = self._git_stdin("checkout", f"{sel}^3", "--", p)
+            ok_all = ok_all and ok
+        return ok_all
+
+    def stash_drop(self, index):
+        return self._git_ok("stash", "drop", f"stash@{{{index}}}")
 
     def commit_files(self, commit_hash):
         """Archivos cambiados en un commit con stats de líneas.

@@ -143,12 +143,14 @@ class GraphCanvas(QWidget):
             base_row = d.get("branch_base", {}).get(b)
             y_end = (row_ys[base_row] if base_row is not None
                      and base_row > row_of_pre[tip_h] else y_start)
-            if x_node != x:
-                path = QPainterPath(QPointF(x_node, y_tip))
-                mid = y_tip + ROW_H // 2
-                path.cubicTo(x_node, mid, x, mid, x, y_start)
-                p.drawPath(path)
+            # Solo dibuja si hay rail real hasta el merge-base; si el tip
+            # ya está sobre el tronco, el pill en el nodo alcanza.
             if y_end > y_start:
+                if x_node != x:
+                    path = QPainterPath(QPointF(x_node, y_tip))
+                    mid = y_tip + ROW_H // 2
+                    path.cubicTo(x_node, mid, x, mid, x, y_start)
+                    p.drawPath(path)
                 p.drawLine(x, y_start, x, y_end)
 
         # ---- Edges (rectas o curvas de fork/merge) ----
@@ -178,20 +180,24 @@ class GraphCanvas(QWidget):
         fm = p.fontMetrics()
         for i, c in enumerate(commits):
             y = row_ys[i]
-            # círculo del commit
+            # círculo del commit: tips rellenos y grandes (anillo blanco
+            # si es HEAD), el resto puntito del color del carril
             ln = lane_of.get(c["hash"], 0)
             cx = x_of(ln)
             is_tip = bool(c.get("branches"))
-            ring = QColor("#e8eaed") if c["hash"] == d.get(
-                "head_hash") else QColor("#1a1c21")
-            p.setPen(QPen(ring, 2))
+            is_head = c["hash"] == d.get("head_hash")
             color = QColor("#3574f0")
             for b, ln2 in d["lane_of_branch"].items():
                 if ln2 == ln:
                     color = QColor(d["colors"].get(b, "#3574f0"))
-            p.setBrush(QColor("#1a1c21") if not is_tip else color)
-            r = 5 if is_tip else 4
-            p.drawEllipse(QPointF(cx, y), r, r)
+            p.setBrush(color)
+            if is_tip or is_head:
+                p.setPen(QPen(QColor("#e8eaed") if is_head
+                              else QColor("#1a1c21"), 2))
+                p.drawEllipse(QPointF(cx, y), 5, 5)
+            else:
+                p.setPen(Qt.NoPen)
+                p.drawEllipse(QPointF(cx, y), 3.5, 3.5)
 
             x = GRAPH_W + 6
             # pills apiladas: una por cada rama que apunta a este commit
@@ -343,7 +349,8 @@ class GraphCanvas(QWidget):
 class GitPanel(QWidget):
     """Panel de Git: ramas + grafo."""
 
-    branch_changed = Signal(str)  # tras checkout
+    branch_changed = Signal(str)   # tras checkout
+    checkout_failed = Signal(str)  # git rechazó el checkout (cambios locales)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -469,5 +476,9 @@ class GitPanel(QWidget):
         branch = item.data(0, Qt.UserRole)
         if branch and self.utils and branch != self.utils.current_branch():
             self.utils.checkout(branch)
-            self.refresh()
-            self.branch_changed.emit(branch)
+            if self.utils.current_branch() == branch:
+                self.refresh()
+                self.branch_changed.emit(branch)
+            else:
+                self.checkout_failed.emit(branch)
+                self.refresh()

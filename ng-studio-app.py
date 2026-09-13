@@ -1,6 +1,6 @@
-"""Launcher del nuevo layout UI (paquete UI/).
+"""Launcher de NG-STUDIO (alias de ui_app.py).
 
-Uso: python ng-studio-app.py
+Uso: python ng-studio-app.py   (o python ui_app.py, es lo mismo)
 """
 from UI.main_window import main
 

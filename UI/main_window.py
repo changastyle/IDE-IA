@@ -39,19 +39,32 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QSplitter, QPlainTextEdit, QMenu, QFileDialog,
     QGraphicsDropShadowEffect, QSizePolicy, QTabWidget,
     QDialog, QListWidget, QListWidgetItem, QWidgetAction, QLineEdit,
-    QMessageBox,
+    QMessageBox, QProgressBar, QStackedWidget,
 )
 
 from utils.git import (
     is_repo, get_current_branch, list_branches, pull, push,
     checkout, create_branch, has_remote,
 )
+from utils.git_utils import GitUtils
 
 MIME_PANEL = "application/x-ui-panel"
 TOPBAR_H = 50
 HOTBAR_W = 50
 TERMINAL_H = 300
 COLLAPSED_W = 30
+
+ICONOS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "iconos")
+CHEVRON_SVG = os.path.join(ICONOS_DIR, "flecha_abajo.svg")
+
+
+def _chevron_right(btn, size=13):
+    """Chevron ▾ SVG a la derecha del texto (icono + layout RTL)."""
+    if os.path.exists(CHEVRON_SVG):
+        btn.setIcon(QIcon(CHEVRON_SVG))
+        btn.setIconSize(QSize(size, size))
+        btn.setLayoutDirection(Qt.RightToLeft)
 
 
 def _process_tree_rss_mb():
@@ -206,6 +219,10 @@ QMenu#branchMenu {
 QMenu#branchMenu::item { padding:6px 18px; border-radius:6px; }
 QMenu#branchMenu::item:selected { background:#2f6fdb; }
 QMenu#branchMenu::item:disabled { color:#666; }
+QWidget#branchRow { background:transparent; border-radius:6px; }
+QWidget#branchRow:hover { background:#33373e; }
+QLabel#branchRowCheck {
+    background:transparent; color:#7ce495; font-size:12px; }
 QMenu#projMenu {
     background:#22252b; border:1px solid #3a3e46; border-radius:10px;
     padding:6px; color:#d7dae0; font-size:13px; }
@@ -253,6 +270,9 @@ QWidget#projRow:hover QLabel#projRowDot { color:#7ce495; }
 #TerminalOverlay QPushButton:hover { color:#fff; background:#2f333a; border-radius:4px; }
 QSplitter::handle { background:#2a2d33; width:4px; }
 QSplitter::handle:hover { background:#2f6fdb; }
+QToolTip {
+    background:#1e2229; color:#d7dae0; font-size:11px;
+    border:1px solid #3a3f47; border-radius:7px; padding:8px 11px; }
 """
 
 
@@ -370,8 +390,11 @@ class Panel(QFrame):
         self.header = PanelHeader(self)
         v.addWidget(self.header)
         self.body = QFrame()
+        self.body.setObjectName("PanelBody")
+        # Selector acotado: sin esto el borde punteado cascada a los hijos
         self.body.setStyleSheet(
-            "background:#202329; border-radius:6px; border:1px dashed #2f333a;")
+            "QFrame#PanelBody { background:#202329; border-radius:6px;"
+            " border:1px dashed #2f333a; }")
         v.addWidget(self.body, 1)
         # Franja vertical para estado colapsado
         self.strip = VerticalLabel(title)
@@ -412,7 +435,8 @@ class HotBar(QFrame):
     side: 'left' o 'right' (solo cambia el orden de los botones).
     """
 
-    def __init__(self, side="left", buttons=None, checked=None, parent=None):
+    def __init__(self, side="left", buttons=None, checked=None,
+                 pinned_bottom=(), parent=None):
         super().__init__(parent)
         self.setObjectName("HotBar")
         self.setFixedWidth(HOTBAR_W)
@@ -421,6 +445,7 @@ class HotBar(QFrame):
         v.setSpacing(6)
         self.btns = {}
         checked = checked or set()
+        pinned = set(pinned_bottom)
         # Definición de botones por defecto
         if buttons is None:
             buttons = (
@@ -445,9 +470,14 @@ class HotBar(QFrame):
                 b.setIcon(QIcon(icon_path))
                 b.setIconSize(QSize(22, 22))
                 b.setText("")
-            v.addWidget(b)
+            if key not in pinned:
+                v.addWidget(b)
             self.btns[key] = b
         v.addStretch(1)
+        # Anclados abajo, en el orden dado por pinned_bottom
+        for key in pinned_bottom:
+            if key in self.btns:
+                v.addWidget(self.btns[key])
 
 
 _ANSI_RE = re.compile(
@@ -885,6 +915,43 @@ class _ProjectRow(QWidget):
         super().mouseReleaseEvent(e)
 
 
+class _BranchRow(QWidget):
+    """Fila del menú de ramas: píldora del color único de la rama
+    (igual que el botón de la barra superior y el grafo), ✓ en la actual."""
+    clicked = Signal()
+
+    def __init__(self, name, color, current=False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("branchRow")
+        self.setAttribute(Qt.WA_StyledBackground)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumWidth(220)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 4, 12, 4)
+        lay.setSpacing(9)
+
+        pill = QLabel(name)
+        pill.setStyleSheet(
+            f"background:{color}; color:#fff; font-size:12px;"
+            "font-weight:bold; border-radius:11px; padding:4px 12px;")
+        lay.addWidget(pill)
+        lay.addStretch(1)
+
+        if current:
+            chk = QLabel("✓")
+            chk.setStyleSheet(
+                "background:transparent; color:#7ce495; font-size:12px;")
+            lay.addWidget(chk)
+
+        for w in self.findChildren(QLabel):
+            w.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
+
+
 class TopBar(QFrame):
     """Barra superior de 50px: carpeta, rama git, pull/push, navegación,
     y run configurations a la derecha."""
@@ -908,11 +975,12 @@ class TopBar(QFrame):
         h.setSpacing(8)
 
         # Proyecto actual (botón único con dropdown integrado)
-        self.btn_folder = QPushButton("Sin carpeta  ⌄")
+        self.btn_folder = QPushButton("Sin carpeta")
         self.btn_folder.setObjectName("tbFolder")
         self.btn_folder.setCursor(Qt.PointingHandCursor)
         self.btn_folder.setToolTip("Proyecto — clic para cambiar o clonar")
         self.btn_folder.clicked.connect(self._show_folder_menu)
+        _chevron_right(self.btn_folder)
         h.addWidget(self.btn_folder)
 
         h.addSpacing(10)
@@ -923,6 +991,7 @@ class TopBar(QFrame):
         self.btn_branch.setCursor(Qt.PointingHandCursor)
         self.btn_branch.setToolTip("Rama git — clic para ver ramas y acciones")
         self.btn_branch.clicked.connect(self._show_branch_menu)
+        _chevron_right(self.btn_branch, 12)
         h.addWidget(self.btn_branch)
 
         # Pull / Push
@@ -962,11 +1031,12 @@ class TopBar(QFrame):
         # ---- Run configurations (derecha, estilo IntelliJ) ----
         self.run_configs = []  # lista de {name, path}
         self._run_current = None
-        self.btn_run_cfg = QPushButton("▶ run ⌄")
+        self.btn_run_cfg = QPushButton("▶ run")
         self.btn_run_cfg.setObjectName("tbRunCfg")
         self.btn_run_cfg.setCursor(Qt.PointingHandCursor)
         self.btn_run_cfg.setToolTip("Configuración de ejecución")
         self.btn_run_cfg.clicked.connect(self._show_run_menu)
+        _chevron_right(self.btn_run_cfg)
         h.addWidget(self.btn_run_cfg)
 
         self.btn_run = QPushButton("▶")
@@ -986,8 +1056,7 @@ class TopBar(QFrame):
         h.addWidget(self.btn_stop_run)
 
         # Engranaje → preferencias (mismo diálogo que 🔧 del chat)
-        gear = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "iconos", "engranaje.svg")
+        gear = os.path.join(ICONOS_DIR, "engranaje.svg")
         self.btn_settings = QPushButton()
         self.btn_settings.setObjectName("tbGit")
         self.btn_settings.setFixedSize(30, 30)
@@ -1012,9 +1081,9 @@ class TopBar(QFrame):
 
     def _update_run_btn(self):
         if self._run_current:
-            self.btn_run_cfg.setText(f"▶ {self._run_current} ⌄")
+            self.btn_run_cfg.setText(f"▶ {self._run_current}")
         else:
-            self.btn_run_cfg.setText("▶ run ⌄")
+            self.btn_run_cfg.setText("▶ run")
 
     def _show_run_menu(self):
         menu = QMenu(self)
@@ -1050,7 +1119,7 @@ class TopBar(QFrame):
         from utils.recents import add_recent
         self.repo_path = path or ""
         name = os.path.basename(path) if path else "Sin carpeta"
-        self.btn_folder.setText(f"{name}  ⌄")
+        self.btn_folder.setText(name)
         self._refresh_git()
         if path:
             add_recent(path)
@@ -1200,11 +1269,34 @@ class TopBar(QFrame):
     def _refresh_git(self):
         if self.repo_path and is_repo(self.repo_path):
             branch = get_current_branch(self.repo_path)
-            self.btn_branch.setText(f"⎇ {branch or 'detached'}")
+            self.btn_branch.setText(branch or "detached")
             self.btn_branch.setEnabled(True)
+            # Píldora con el color del carril de la rama en el grafo
+            color = ""
+            if branch:
+                try:
+                    color = GitUtils(self.repo_path).branch_color(branch)
+                except Exception:
+                    pass
+            if color:
+                self.btn_branch.setStyleSheet(
+                    f"QPushButton{{background:{color}; color:#fff;"
+                    "border-radius:12px; padding:5px 12px;"
+                    "font-weight:bold;}}"
+                    f"QPushButton:hover{{background:{color};}}")
+                chev = os.path.join(ICONOS_DIR, "flecha_abajo_w.svg")
+                if os.path.exists(chev):
+                    self.btn_branch.setIcon(QIcon(chev))
+            else:
+                self.btn_branch.setStyleSheet("")
+                if os.path.exists(CHEVRON_SVG):
+                    self.btn_branch.setIcon(QIcon(CHEVRON_SVG))
         else:
             self.btn_branch.setText("⎇ —")
             self.btn_branch.setEnabled(False)
+            self.btn_branch.setStyleSheet("")
+            if os.path.exists(CHEVRON_SVG):
+                self.btn_branch.setIcon(QIcon(CHEVRON_SVG))
 
     def _show_branch_menu(self):
         if not self.repo_path:
@@ -1232,13 +1324,16 @@ class TopBar(QFrame):
         if local:
             head = menu.addAction("Local")
             head.setEnabled(False)
+            colors = GitUtils(self.repo_path).branch_colors()
             for b in local:
-                act = QAction(("🏷  " if b == cur else "    ") + b, menu)
-                if b != cur:
-                    act.triggered.connect(
-                        lambda _, br=b: self.git_action.emit(f"checkout:{br}"))
-                else:
-                    act.setEnabled(False)
+                act = QWidgetAction(menu)
+                row = _BranchRow(b, colors.get(b, "#9aa0aa"),
+                                 current=(b == cur))
+                row.setToolTip(f"checkout {b}")
+                row.clicked.connect(
+                    lambda br=b: (menu.close(),
+                                  self.git_action.emit(f"checkout:{br}")))
+                act.setDefaultWidget(row)
                 menu.addAction(act)
         if remote:
             head = menu.addAction("Remote")
@@ -1258,30 +1353,157 @@ class TopBar(QFrame):
 
 
 class ProcPopup(QDialog):
-    """Popup con los procesos corriendo en terminales (hijos del IDE),
-    cada uno con botón rojo para matarlo 1 a 1."""
+    """Popup tipo htop con los procesos corriendo en terminales (hijos
+    del IDE): PID, usuario, CPU% y memoria con barritas, tiempo corriendo,
+    comando y botón rojo para matarlo 1 a 1. Se refresca cada 2s.
+    Se cierra con la ✕ de arriba a la derecha o Esc."""
 
-    def __init__(self, procs, parent=None):
-        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint)
+    MONO = "font-family:'Menlo','SF Mono',monospace;"
+    CARD = (
+        "QFrame#procRow{background:#262b33;border:1px solid #2f3540;"
+        "border-radius:6px;}"
+        "QFrame#procRow:hover{background:#2d333d;border-color:#3d4552;}")
+
+    def __init__(self, get_procs, parent=None):
+        # Qt.Popup (y no Qt.Tool): se cierra solo al clickear afuera.
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setWindowTitle("Procesos")
+        self.setObjectName("procPopup")
+        # Ventana opaca y sin border-radius: con WA_TranslucentBackground
+        # macOS componía el Qt.Tool semitransparente y se veía el fondo.
+        self.setStyleSheet(
+            "QDialog#procPopup{background:#1e2229;border:1px solid #343b46;}"
+            "QDialog#procPopup QWidget{background:transparent;border:none;}")
+        self._get_procs = get_procs
         v = QVBoxLayout(self)
-        v.setContentsMargins(12, 10, 12, 10)
-        v.setSpacing(4)
+        v.setContentsMargins(12, 10, 12, 12)
+        v.setSpacing(6)
+        # ---- cabecera: título + stats + ✕ ----
+        head = QHBoxLayout()
+        head.setSpacing(8)
         ttl = QLabel("Procesos de terminales")
-        ttl.setStyleSheet("color:#e8eaed; font-weight:bold; font-size:12px;")
-        v.addWidget(ttl)
+        ttl.setStyleSheet(
+            "color:#e8eaed; font-weight:bold; font-size:12px;")
+        head.addWidget(ttl)
+        self._stats = QLabel()
+        self._stats.setStyleSheet(
+            f"color:#8e8e93; font-size:10px; {self.MONO}")
+        head.addWidget(self._stats)
+        head.addStretch(1)
+        x = QPushButton("✕")
+        x.setFixedSize(22, 22)
+        x.setCursor(Qt.PointingHandCursor)
+        x.setToolTip("Cerrar (Esc)")
+        x.setStyleSheet(
+            "QPushButton{background:transparent;color:#8e8e93;border:none;"
+            "border-radius:4px;font-size:12px;font-weight:bold;}"
+            "QPushButton:hover{background:#e5484d;color:#fff;}")
+        x.clicked.connect(self.accept)
+        head.addWidget(x)
+        v.addLayout(head)
+        # ---- encabezado de columnas ----
+        cols = QHBoxLayout()
+        cols.setContentsMargins(9, 0, 9, 0)
+        cols.setSpacing(8)
+        for text, w in (("PID", 52), ("USER", 60), ("CPU", 80),
+                        ("MEM", 100), ("TIME", 64), ("COMMAND", 0)):
+            lbl = QLabel(text)
+            lbl.setStyleSheet(
+                "color:#6e7480; font-size:9px; font-weight:bold;")
+            if w:
+                lbl.setFixedWidth(w)
+            cols.addWidget(lbl, 0 if w else 1)
+        cols.addSpacing(22)  # columna del botón kill
+        v.addLayout(cols)
+        # ---- filas ----
+        self._rows = QVBoxLayout()
+        self._rows.setSpacing(3)
+        v.addLayout(self._rows)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._refresh)
+        self._timer.start(2000)
+        self._refresh()
+
+    def _cell(self, text, width, color="#d7dae0"):
+        lbl = QLabel(text)
+        lbl.setStyleSheet(f"color:{color}; font-size:11px; {self.MONO}")
+        lbl.setFixedWidth(width)
+        return lbl
+
+    def _bar(self, value, color, width):
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(max(0, min(100, int(value))))
+        bar.setTextVisible(False)
+        bar.setFixedSize(width, 6)
+        bar.setStyleSheet(
+            "QProgressBar{background:#1a1d23;border:none;border-radius:3px;}"
+            f"QProgressBar::chunk{{background:{color};border-radius:3px;}}")
+        return bar
+
+    def _clear_rows(self):
+        while self._rows.count():
+            it = self._rows.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+            elif it.layout():
+                self._rows.removeItem(it.layout())
+
+    def _refresh(self):
+        procs = self._get_procs()
+        total_mb = sum(p[1] for p in procs) / 1024
+        self._stats.setText(
+            f"  {len(procs)} proc  ·  {total_mb:.0f} MB")
+        self._clear_rows()
         if not procs:
             empty = QLabel("No hay procesos corriendo")
-            empty.setStyleSheet("color:#8e8e93; font-size:11px;")
-            v.addWidget(empty)
-        for pid, rss_kb, cmd in procs:
-            row = QHBoxLayout()
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet("color:#8e8e93; font-size:11px; padding:6px;")
+            self._rows.addWidget(empty)
+            return
+        max_rss = max(p[1] for p in procs) or 1
+        for pid, rss_kb, cpu, user, etime, cmd in procs:
+            mb = rss_kb / 1024
+            card = QFrame()
+            card.setObjectName("procRow")
+            card.setStyleSheet(self.CARD)
+            row = QHBoxLayout(card)
+            row.setContentsMargins(8, 4, 6, 4)
             row.setSpacing(8)
-            short = cmd if len(cmd) <= 58 else cmd[:55] + "…"
-            lbl = QLabel(f"{short}   ·   {rss_kb / 1024:.0f} MB")
-            lbl.setStyleSheet("color:#d7dae0; font-size:11px;")
-            lbl.setToolTip(f"PID {pid}\n{cmd}")
-            row.addWidget(lbl, 1)
+            row.addWidget(self._cell(str(pid), 52, "#8e8e93"))
+            row.addWidget(self._cell(user[:10], 60, "#9aa3af"))
+            # CPU: barrita + %
+            cpu_color = ("#e5484d" if cpu >= 50 else
+                         "#e8a13c" if cpu >= 15 else "#7ec97e")
+            cw = QWidget()
+            ch = QHBoxLayout(cw)
+            ch.setContentsMargins(0, 0, 0, 0)
+            ch.setSpacing(5)
+            ch.addWidget(self._bar(cpu, cpu_color, 34))
+            ch.addWidget(self._cell(f"{cpu:.0f}%", 38, cpu_color))
+            ch.addStretch(1)
+            cw.setFixedWidth(80)
+            row.addWidget(cw)
+            # MEM: barrita + valor (color por tamaño absoluto)
+            mem_color = ("#4c9aff" if mb < 128 else
+                         "#e8a13c" if mb < 512 else "#e5484d")
+            mw = QWidget()
+            mh = QHBoxLayout(mw)
+            mh.setContentsMargins(0, 0, 0, 0)
+            mh.setSpacing(5)
+            mh.addWidget(self._bar(100 * rss_kb / max_rss, mem_color, 44))
+            mem_lbl = self._cell(
+                f"{mb/1024:.1f}G" if mb >= 1024 else f"{mb:.0f}M", 44)
+            mh.addWidget(mem_lbl)
+            mh.addStretch(1)
+            mw.setFixedWidth(100)
+            row.addWidget(mw)
+            row.addWidget(self._cell(etime, 64, "#8e8e93"))
+            short = cmd if len(cmd) <= 44 else cmd[:41] + "…"
+            cmd_lbl = QLabel(short)
+            cmd_lbl.setStyleSheet("color:#d7dae0; font-size:11px;")
+            cmd_lbl.setToolTip(f"PID {pid}\n{cmd}")
+            row.addWidget(cmd_lbl, 1)
             btn = QPushButton("■")
             btn.setFixedSize(22, 22)
             btn.setCursor(Qt.PointingHandCursor)
@@ -1292,14 +1514,11 @@ class ProcPopup(QDialog):
                 "QPushButton:hover{background:#ff5f5f;}")
             btn.clicked.connect(lambda _, p=pid: self._kill(p))
             row.addWidget(btn)
-            v.addLayout(row)
-        close = QPushButton("Cerrar")
-        close.clicked.connect(self.accept)
-        v.addWidget(close)
+            self._rows.addWidget(card)
 
     def _kill(self, pid):
         subprocess.run(["kill", str(pid)], capture_output=True)
-        self.accept()
+        self._refresh()
 
 
 class BottomBar(QFrame):
@@ -1340,23 +1559,27 @@ class BottomBar(QFrame):
         super().mousePressEvent(e)
 
     def _child_processes(self):
-        """Descendientes del IDE (excluyéndolo): [(pid, rss_kb, cmd)]."""
+        """Descendientes del IDE (excluyéndolo), ordenados por RSS desc:
+        [(pid, rss_kb, cpu%, user, etime, cmd)]."""
         try:
             out = subprocess.run(
-                ["ps", "-axo", "pid=,ppid=,rss=,command="],
+                ["ps", "-axo",
+                 "pid=,ppid=,rss=,%cpu=,user=,etime=,command="],
                 capture_output=True, text=True, timeout=5).stdout
         except Exception:
             return []
         children, info = {}, {}
         for line in out.splitlines():
-            parts = line.split(None, 3)
-            if len(parts) < 3:
+            parts = line.split(None, 6)
+            if len(parts) < 6:
                 continue
             try:
                 pid, ppid, r = int(parts[0]), int(parts[1]), int(parts[2])
+                cpu = float(parts[3])
             except ValueError:
                 continue
-            info[pid] = (r, parts[3] if len(parts) > 3 else "?")
+            info[pid] = (r, cpu, parts[4], parts[5],
+                         parts[6] if len(parts) > 6 else "?")
             children.setdefault(ppid, []).append(pid)
         result, stack, seen = [], [os.getpid()], set()
         while stack:
@@ -1364,14 +1587,15 @@ class BottomBar(QFrame):
             if pid in seen or pid not in info:
                 continue
             seen.add(pid)
-            result.append((pid, info[pid][0], info[pid][1]))
+            result.append((pid,) + info[pid])
             stack.extend(children.get(pid, []))
         me = os.getpid()
-        return [(p, r, c) for p, r, c in result if p != me]
+        result = [p for p in result if p[0] != me]
+        result.sort(key=lambda p: p[1], reverse=True)
+        return result
 
     def _show_proc_popup(self):
-        procs = self._child_processes()
-        dlg = ProcPopup(procs, self)
+        dlg = ProcPopup(self._child_processes, self)
         dlg.adjustSize()
         pos = self.lbl_ram.mapToGlobal(QPoint(
             self.lbl_ram.width() - dlg.width(), -dlg.height() - 6))
@@ -1448,10 +1672,15 @@ class MainBody(QWidget):
         self.left_zone = SideZone("left")
         self.main_splitter.addWidget(self.left_zone)
 
-        # Centro (editor)
+        # Centro: editor + panel de Diff (se intercambian en el mismo lugar)
         from UI.panels.editor_panel import EditorPanel
+        from UI.panels.diff_panel import DiffPanel
         self.center = EditorPanel()
-        self.main_splitter.addWidget(self.center)
+        self.diff_panel = DiffPanel()
+        self.center_stack = QStackedWidget()
+        self.center_stack.addWidget(self.center)
+        self.center_stack.addWidget(self.diff_panel)
+        self.main_splitter.addWidget(self.center_stack)
 
         # Zona derecha
         self.right_zone = SideZone("right")
@@ -1466,17 +1695,27 @@ class MainBody(QWidget):
             "files", "Project", self.files_panel)
         self._add_files_header_btns(pf, self.files_panel)
 
-        # Paneles placeholder en zona izquierda
-        p1l = QLabel("Panel 2 (izq)")
-        p1l.setAlignment(Qt.AlignCenter)
-        p1l.setStyleSheet("color:#666;")
-        self.left_zone.add_panel_widget("p1", "Panel 2", p1l)
+        # Panel de Changes (commit) en zona izquierda
+        from UI.panels.changes_panel import ChangesPanel
+        self.changes_panel = ChangesPanel()
+        self.left_zone.add_panel_widget("p1", "Changes", self.changes_panel)
         self.left_zone.toggle("p1", False)
-        p2l = QLabel("Panel 3 (izq)")
-        p2l.setAlignment(Qt.AlignCenter)
-        p2l.setStyleSheet("color:#666;")
-        self.left_zone.add_panel_widget("p2", "Panel 3", p2l)
+        self.changes_panel.diff_requested.connect(self._open_diff)
+        self.changes_panel.committed.connect(self._on_committed)
+        self.changes_panel.generate_requested.connect(self._generate_msg)
+        # Panel de Diff ↔ Changes
+        self.diff_panel.close_requested.connect(
+            lambda: self.center_stack.setCurrentIndex(0))
+        self.diff_panel.selection_changed.connect(self._diff_selection_changed)
+        self.diff_panel.commit_requested.connect(
+            self.changes_panel.commit_paths)
+
+        # Panel de Stash (el bolsillo) en zona izquierda
+        from UI.panels.stash_panel import StashPanel
+        self.stash_panel = StashPanel()
+        self.left_zone.add_panel_widget("p2", "Stash", self.stash_panel)
         self.left_zone.toggle("p2", False)
+        self.stash_panel.stash_changed.connect(self.changes_panel.refresh)
 
         # Panel de chat IA en zona izquierda
         from UI.panels.chat_panel import ChatPanel
@@ -1492,6 +1731,8 @@ class MainBody(QWidget):
         pg.header.add_action("↻", "Refrescar", self.git_panel.refresh)
         self.left_zone.toggle("git", False)
         self.git_panel.branch_changed.connect(self._on_branch_changed)
+        # El stash movió algo → refrescar grafo y lista de cambios
+        self.stash_panel.stash_changed.connect(self.git_panel.refresh)
 
         # Panel de archivos en zona derecha (independiente, oculto al inicio)
         self.files_panel_right = FilesPanel()
@@ -1557,11 +1798,37 @@ class MainBody(QWidget):
 
     def _on_branch_changed(self, branch):
         """Checkout desde el panel de Git → refrescar la top bar."""
+        self.changes_panel.refresh()
         p = self.parent()
         while p and not hasattr(p, "top_bar"):
             p = p.parent()
         if p and hasattr(p, "top_bar"):
             p.top_bar.set_folder(p.top_bar.repo_path)
+
+    def _open_diff(self, rel_path):
+        """Abre el panel de Diff para un archivo del panel de Changes."""
+        if not self.changes_panel.utils:
+            return
+        self.diff_panel.show_file(self.changes_panel.utils, rel_path)
+        self.center_stack.setCurrentIndex(1)
+
+    def _diff_selection_changed(self, path, included, total):
+        """El diff cambió la selección de líneas → sincronizar la lista."""
+        self.changes_panel.set_file_selection(
+            path, self.diff_panel.canvas.selected_lines().keys())
+
+    def _on_committed(self, push_after):
+        """Tras un commit: refrescar top bar + git, y push si corresponde."""
+        self.top_bar._refresh_git()
+        self.git_panel.refresh()
+        if push_after and self.top_bar.repo_path:
+            ok, out = push(self.top_bar.repo_path)
+            self.statusBar().showMessage(
+                ("✔ " if ok else "✖ ") + out.replace("\n", " ")[:120], 5000)
+
+    def _generate_msg(self):
+        self.statusBar().showMessage(
+            "✨ Generate: pendiente de conectar a la IA", 3000)
 
     def _add_chat_header_ctrls(self, panel, chat):
         """Controles de modelo en la fila del título 'Chat IA', a la derecha.
@@ -1794,6 +2061,8 @@ class MainBody(QWidget):
         self.chat_panel.set_repo(path)
         self.chat_panel_right.set_repo(path)
         self.git_panel.set_repo(path)
+        self.changes_panel.set_repo(path)
+        self.stash_panel.set_repo(path)
 
 
 class UIMainWindow(QMainWindow):
@@ -1825,22 +2094,23 @@ class UIMainWindow(QMainWindow):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
-        _ia_icon = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "iconos", "ia.svg")
-        _icons = os.path.join(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__))), "iconos")
+        _ia_icon = os.path.join(ICONOS_DIR, "ia.svg")
         self.hotbar_left = HotBar(
             side="left",
             buttons=(
                 ("files", "📁", "Panel de archivos", None),
-                ("p1", "2", "Panel 2 (izq)", None),
-                ("p2", "3", "Panel 3 (izq)", None),
+                ("p1", "", "Changes — commit",
+                 os.path.join(ICONOS_DIR, "commit.svg")),
+                ("p2", "", "Stash — el bolsillo",
+                 os.path.join(ICONOS_DIR, "stash.svg")),
                 ("chat", "4", "Panel 4 — Chat IA (izq)", _ia_icon),
                 ("git", "", "Ramas git — pull/push/checkout",
-                 os.path.join(_icons, "git_branch.svg")),
+                 os.path.join(ICONOS_DIR, "git_branch.svg")),
                 ("term", "", "Terminal (pestañas)",
-                 os.path.join(_icons, "terminal_w.svg")),
+                 os.path.join(ICONOS_DIR, "terminal_w.svg")),
             ),
-            checked={"files"})
+            checked={"files"},
+            pinned_bottom=("git", "term"))
         self.hotbar_right = HotBar(
             side="right",
             buttons=(
@@ -1894,6 +2164,8 @@ class UIMainWindow(QMainWindow):
         self.top_bar.git_action.connect(self._on_git_action)
         self.top_bar.run_requested.connect(self._on_run_requested)
         self.top_bar.stop_requested.connect(self._on_stop_requested)
+        # Checkout rechazado desde el panel de Git → popup de stash
+        self.body.git_panel.checkout_failed.connect(self._on_checkout_failed)
         self.top_bar.edit_configs_requested.connect(self._open_run_configs)
         self.top_bar.open_new_window.connect(self._open_new_window)
         self.top_bar.settings_requested.connect(self._show_settings_menu)
@@ -2000,6 +2272,53 @@ class UIMainWindow(QMainWindow):
         self.statusBar().showMessage(f"Abierto: {os.path.basename(path)}", 3000)
 
     # ---- git ----
+    def _is_dirty_conflict(self, out):
+        out = (out or "").lower()
+        return ("would be overwritten by checkout" in out
+                or "untracked working tree files" in out
+                or "please commit your changes" in out)
+
+    def _try_checkout(self, repo, branch):
+        """Checkout; si pisaría cambios locales, ofrece stash en un popup."""
+        ok, out = checkout(repo, branch)
+        if ok or not self._is_dirty_conflict(out):
+            return ok, out
+        files = [l.strip() for l in (out or "").splitlines()
+                 if l.startswith("\t") and l.strip()]
+        mb = QMessageBox(self)
+        mb.setWindowTitle("Cambios sin commitear")
+        mb.setIcon(QMessageBox.Warning)
+        mb.setText(f"Estos archivos se pueden pisar al pasarte a {branch}:")
+        mb.setInformativeText(
+            "\n".join(f"•  {f}" for f in files[:12])
+            + ("\n…" if len(files) > 12 else "")
+            + "\n\n¿Querés guardarlos en el stash (el bolsillo)?")
+        b_stash = mb.addButton("📥 Stash y cambiar de rama",
+                               QMessageBox.AcceptRole)
+        b_commit = mb.addButton("Commit…", QMessageBox.ActionRole)
+        mb.addButton("Cancelar", QMessageBox.RejectRole)
+        mb.exec()
+        clicked = mb.clickedButton()
+        if clicked is b_stash:
+            g = GitUtils(repo)
+            ok2, out2 = g.stash_push()
+            if not ok2:
+                return False, out2
+            self.body.stash_panel.refresh()
+            self.body.changes_panel.refresh()
+            return checkout(repo, branch)
+        if clicked.text() == "Commit…":
+            self.hotbar_left.btns["p1"].setChecked(True)
+        return False, out
+
+    def _on_checkout_failed(self, branch):
+        """Checkout desde el panel de Git que git rechazó → popup de stash."""
+        repo = self.top_bar.repo_path
+        if repo:
+            self._try_checkout(repo, branch)
+        self.body.git_panel.refresh()
+        self.top_bar._refresh_git()
+
     def _on_git_action(self, action):
         repo = self.top_bar.repo_path
         if not repo:
@@ -2009,12 +2328,13 @@ class UIMainWindow(QMainWindow):
         elif action == "push":
             ok, out = push(repo)
         elif action == "commit":
-            self.statusBar().showMessage("Commit: pendiente de implementar", 3000)
+            self.hotbar_left.btns["p1"].setChecked(True)
+            self.statusBar().showMessage("Panel de Changes", 2500)
             return
         elif action.startswith("newbranch:"):
             ok, out = create_branch(repo, action.split(":", 1)[1])
         elif action.startswith("checkout:"):
-            ok, out = checkout(repo, action.split(":", 1)[1])
+            ok, out = self._try_checkout(repo, action.split(":", 1)[1])
         else:
             return
         self.statusBar().showMessage(
