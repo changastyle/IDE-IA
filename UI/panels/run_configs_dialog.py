@@ -21,13 +21,13 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem,
 )
 
-from utils.run_configs import (
+from UTILS.run_configs import (
     load_configs, save_configs, npm_scripts, VALID_TYPES,
     FILE_TYPES, GOAL_TYPES,
 )
 
 ICONOS_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "iconos")
 
 TYPE_NAMES = {

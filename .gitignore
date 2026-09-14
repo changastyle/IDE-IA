@@ -15,12 +15,17 @@ env/
 
 # PyInstaller / builds
 build/
+OUT/build/
+OUT/NG-STUDIO.spec
+OUT/_version_new.md
+OUT/_vlines.txt
+#OUT/appimagetool-x86_64.AppImage
 dist/
 *.manifest
 
 # Estado local de la app
-ns-code/
-ng-studio-stuff/
+#ns-code/
+#ng-studio-stuff/
 _trash/
 *.log
 

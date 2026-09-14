@@ -1,0 +1,10 @@
+COPY-OF-SHORCUT-UTILS-ONLY-FOR-TESTING-PORPUSES.py — Resumen del archivo.
+
+Lenguaje: Python
+
+Funciones:
+  - load_shortcuts()   [línea 57]  — Devuelve dict id → secuencia (con defaults si no existe).
+  - save_shortcuts(shortcuts_dict: any)   [línea 73]  — Guarda id → secuencia.
+  - reset_shortcuts()   [línea 82]  — Vuelve todos los shortcuts a sus defaults.
+
+[generado por analyze_file]

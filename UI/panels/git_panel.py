@@ -5,18 +5,17 @@
 - Derecha: grafo pintado (carriles por rama, curvas de fork/merge),
   badges de rama:hash, fecha, mensaje y autor al margen.
 """
-import os
 
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QTimer
-from PySide6.QtGui import (QColor, QPainter, QPen, QFont, QPixmap, QIcon,
+import threading
+
+from PySide6.QtCore import Qt, Signal, QRectF, QPointF
+from PySide6.QtGui import (QColor, QPainter, QPen, QPixmap, QIcon,
                            QBrush, QPainterPath)
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget,
-    QTreeWidgetItem, QScrollArea, QLabel, QPushButton, QSizePolicy,
-    QFrame,
-)
+    QWidget, QVBoxLayout, QSplitter, QTreeWidget,
+    QTreeWidgetItem, QScrollArea, QLabel, QPushButton, )
 
-from utils.git_utils import GitUtils
+from UTILS.git_utils import GitUtils
 
 ROW_H = 34
 GRAPH_W = 110
@@ -351,11 +350,16 @@ class GitPanel(QWidget):
 
     branch_changed = Signal(str)   # tras checkout
     checkout_failed = Signal(str)  # git rechazó el checkout (cambios locales)
+    _graph_ready = Signal(object)  # payload del worker → _apply_graph
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.repo = ""
         self.utils = None
+        self._fetch_gen = 0       # generación del fetch (descarta viejos)
+        self._fetching = False
+        self._fetch_pending = False
+        self._graph_ready.connect(self._apply_graph)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -413,7 +417,34 @@ class GitPanel(QWidget):
             btn.clicked.connect(self._init_repo)
             self.tree.setItemWidget(it, 0, btn)
             return
-        data = self.utils.graph()
+        # graph() + branches() spawnean varios git (log --all, reflog
+        # por rama, rev-list, merge-base) → daemon thread, nunca en UI.
+        if self._fetching:
+            self._fetch_pending = True   # re-correr al terminar
+            return
+        self._fetching = True
+        self._fetch_gen += 1
+        gen = self._fetch_gen
+        utils = self.utils
+
+        def _fetch():
+            self._graph_ready.emit({
+                "gen": gen, "graph": utils.graph(),
+                "branches": utils.branches()})
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _apply_graph(self, payload):
+        """(hilo UI) Construye árbol + grafo con el payload del worker."""
+        self._fetching = False
+        if payload["gen"] != self._fetch_gen:
+            return                      # llegó un fetch viejo
+        if self._fetch_pending:
+            self._fetch_pending = False
+            self.refresh()
+            return
+        data = payload["graph"]
+        branches = payload["branches"]
         self.canvas.set_data(data)
         current = data["current"]
         # Agrupar commits por carril → rama dueña
@@ -427,7 +458,7 @@ class GitPanel(QWidget):
             by_branch.setdefault(b, []).append(c)
         # Ramas que comparten tip (p. ej. puto = dev) heredan sus commits
         tips = data.get("tips", {})
-        for b in self.utils.branches():
+        for b in branches:
             if b in by_branch:
                 continue
             tip = tips.get(b)
@@ -435,7 +466,7 @@ class GitPanel(QWidget):
                 if tips.get(b2) == tip:
                     by_branch[b] = lst
                     break
-        for b in self.utils.branches():
+        for b in branches:
             color = data["colors"].get(b, "#3574f0")
             # Tag coloreado con el nombre de la rama (estilo IntelliJ)
             top = QTreeWidgetItem([f"  {b}"])

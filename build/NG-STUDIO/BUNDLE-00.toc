@@ -1,1 +1,0 @@
-([('NG-STUDIO', '/Users/nico/Desktop/NG-STUDIO/OUT/NG-STUDIO', 'EXECUTABLE')],)

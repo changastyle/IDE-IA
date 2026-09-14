@@ -1,0 +1,43 @@
+=== analyze_file: COPY-OF-SHORCUT-UTILS-ONLY-FOR-TESTING-PORPUSES.py ===
+COPY-OF-SHORCUT-UTILS-ONLY-FOR-TESTING-PORPUSES.py — Resumen del archivo.
+
+Lenguaje: Python
+
+Funciones:
+  - load_shortcuts()   (línea 52)
+  - save_shortcuts(shortcuts_dict)   (línea 68)
+  - reset_shortcuts()   (línea 77)
+
+[generado por analyze_file]
+
+=== analyze_file: test-sample.js ===
+test-sample.js — Resumen del archivo.
+
+Lenguaje: JavaScript
+
+Clases:
+  - Monitor(name, width, height)   (línea 27)
+      - area()   (línea 34)
+      - fromScreen(screen)   (línea 38)
+      - describe(prefix)   (línea 42)
+
+Funciones:
+  - pickLargest(monitors)   (línea 47)
+  - fitWindow(win, mon)   (línea 51)
+  - clamp(v, lo, hi)   (línea 56)
+
+[generado por analyze_file]
+
+=== analyze_file: test-sample.java ===
+test-sample.java — Resumen del archivo.
+
+Lenguaje: Java
+
+Clases:
+  - ScreenUtils(int width, int height)   (línea 24)
+      - area()   (línea 34)
+      - largest(List<ScreenUtils> screens)   (línea 38)
+      - validate()   (línea 48)
+      - toString()   (línea 55)
+
+[generado por analyze_file]

@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 LMSTUDIO = os.environ.get("LMSTUDIO_URL", "http://172.27.247.113:1234")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONV_DIR = os.path.join(APP_DIR, "conversaciones")
-LAST_TXT = os.path.join(APP_DIR, "last-conversation.txt")
+LAST_TXT = os.path.join(APP_DIR, "NG-STUDIO-STUFF/last-conversation.txt")
 MAX_ITER = 10
 MAX_RESULT = 8000
 MAX_RECENT = 10
@@ -36,7 +36,7 @@ INDEX_PROMPT = ("🧠 Indexa el proyecto: usa list_files y read_file para explor
                 "breves. Guarda el resultado con save_file en 'indexado.txt'. "
                 "No modifiques ningún otro archivo.")
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "conversaciones"}
-ICONS_DIR = os.path.join(APP_DIR, "iconos")
+ICONS_DIR = os.path.join(APP_DIR, "UI", "iconos")
 
 
 def svg_icon(name):
@@ -2607,7 +2607,7 @@ class MainWindow(QMainWindow):
         if ext in ImageViewerDialog.IMG_EXTS:
             dlg = ImageViewerDialog(self, path, rel)
         elif ext in (".md", ".markdown"):
-            from utils.markdown_utils import MarkdownViewerDialog
+            from UTILS.markdown_utils import MarkdownViewerDialog
             dlg = MarkdownViewerDialog(self, path, rel)
         else:
             dlg = FileEditorDialog(self, path, rel, self.tools)
@@ -2643,8 +2643,16 @@ class MainWindow(QMainWindow):
     def _start_rec(self):
         """Inicia grabación con ffmpeg."""
         import subprocess
-        voice_dir = os.path.join(APP_DIR, "Voice")
+        voice_dir = os.path.join(APP_DIR, "NG-STUDIO-STUFF/recording-voice")
         os.makedirs(voice_dir, exist_ok=True)
+        try:
+            import importlib
+            mark_no_index = importlib.import_module(
+                "UTILS.VS-CODE-INTELLIJ-IGNORE-NG-STUDIO-STUFF-FOLDER-UTILS"
+            ).mark_no_index
+            mark_no_index(os.path.join(APP_DIR, "NG-STUDIO-STUFF"))
+        except ImportError:
+            pass
         wav_path = os.path.join(voice_dir, "rec.wav")
         # Borrar grabación anterior si existe
         if os.path.exists(wav_path):

@@ -1,0 +1,191 @@
+COPY-OF-CHAT-UI-4-TESTING-PURPOSES.py — Resumen del archivo.
+
+Lenguaje: Python
+
+Clases:
+  - Tools(root: any)   [línea 516]
+      - _resolve(rel: any)   [línea 521]
+      - run(tool: any, args: any)   [línea 527]
+      - _list(rel: any)   [línea 540]
+      - _read(rel: any)   [línea 557]
+      - _save(rel: any, content: any)   [línea 565]
+      - _edit(rel: any, old: any, new: any)   [línea 583]
+      - _build_change(rel: any, kind: any, old_text: any, new_text: any)   [línea 596]  — Construye el registro de cambio con diff de líneas (added/removed).
+      - _run_skill(name: any, args: any)   [línea 627]
+  - Worker(base: any, model: any, tools: any, history: any, api_key: str = '', session_id: str = '', images: any = None, no_context: bool = False, prompt_id: str = '', parent: any = None)   [línea 651]
+      - stop()   [línea 671]
+      - _system_message()   [línea 674]
+      - _supports_vision()   [línea 699]  — Heurística: ¿el modelo soporta imágenes?
+      - _chat()   [línea 710]
+      - run()   [línea 802]
+      - _friendly_error(e: any)   [línea 846]
+      - _emit_stats(total_time: any)   [línea 875]
+  - FnThread(fn: any, parent: any = None)   [línea 892]
+      - run()   [línea 900]
+  - Input(parent: any = None)   [línea 907]
+      - dragEnterEvent(e: any)   [línea 916]
+      - dropEvent(e: any)   [línea 922]
+      - keyPressEvent(e: any)   [línea 947]
+  - SkillsDialog(parent: any, skills_dir: any, cwd: any)   [línea 954]
+      - _skills()   [línea 990]
+      - _reload()   [línea 996]
+      - _load(row: any)   [línea 1010]
+      - _run()   [línea 1013]
+  - ImageViewerDialog(parent: any, path: any, rel: any)   [línea 1032]  — Visor de imágenes: SVG, PNG, JPG, GIF, WEBP, BMP.
+      - _load_image(ext: any)   [línea 1083]
+      - _fit()   [línea 1106]
+      - _zoom(factor: any)   [línea 1118]
+      - _apply_scale()   [línea 1124]
+      - _open_external()   [línea 1131]
+  - FileEditorDialog(parent: any, path: any, rel: any, tools: any)   [línea 1144]  — Editor/visor de archivos del workspace. Muestra diff si la IA tocó el archivo.
+      - _render_diff(diff_lines: any)   [línea 1216]  — Pinta el diff con colores: rojo eliminado, verde agregado.
+      - _save()   [línea 1230]
+  - PrefsDialog(parent: any, prefs: any, all_models: any)   [línea 1238]  — Preferencias del usuario: modelos preferidos, límites de tokens, budget.
+      - _set_combo(combo: any, value: any)   [línea 1317]
+      - get_prefs()   [línea 1322]
+  - ProviderDialog(parent: any)   [línea 1384]
+      - _test_connection()   [línea 1456]
+      - _copy_error()   [línea 1487]
+      - _set_test_result(dot: any, text: any, color: any)   [línea 1493]
+      - values()   [línea 1498]
+  - ModelPickerDialog(parent: any, providers: any, pinned: any)   [línea 1512]
+      - _discover_one(name: any)   [línea 1559]
+      - _show_provider()   [línea 1569]
+      - _add_provider()   [línea 1596]
+      - _del_provider()   [línea 1609]
+      - _ok()   [línea 1616]
+  - RunDialog(parent: any, configs: any)   [línea 1628]
+      - _flush()   [línea 1688]
+      - _load_row(row: any)   [línea 1695]
+      - _reload()   [línea 1702]
+      - _add()   [línea 1707]
+      - _remove()   [línea 1713]
+      - selected_cmd()   [línea 1722]
+      - _run()   [línea 1729]
+      - _ok()   [línea 1736]
+  - BudgetBar(parent: any = None)   [línea 1741]  — Barra de progreso del budget de tokens del proyecto.
+      - set_values(used: any, budget: any)   [línea 1750]
+      - paintEvent(e: any)   [línea 1755]
+  - TokenBar(parent: any = None)   [línea 1778]  — Mini gráfico de barras: una barra por turno, altura = tokens del turno.
+      - set_turns(turns: any)   [línea 1788]
+      - paintEvent(e: any)   [línea 1793]
+      - event(ev: any)   [línea 1827]
+  - VoiceTranscriber(wav_path: any, parent: any = None, mode: str = 'local', base: any = None, key: str = '', model: str = '')   [línea 1846]  — Transcribe un archivo WAV a texto.
+      - run()   [línea 1865]
+      - _transcribe_local()   [línea 1871]
+      - _transcribe_ia()   [línea 1889]  — Usa /v1/audio/transcriptions (OpenAI-compatible, ej: LM Studio whisper).
+  - PromptNavigator(parent: any = None)   [línea 1922]  — Panel flotante estilo 'prompt navigator': lista los prompts de la
+      - add_prompt(pos: any, text: any)   [línea 1957]
+      - set_response_preview(text: any)   [línea 1967]  — Actualiza el preview de respuesta del último prompt.
+      - _on_click(item: any)   [línea 1979]
+      - _step(delta: any)   [línea 1982]
+  - AudioMeter(parent: any = None)   [línea 1992]  — Barra visualizadora de nivel de audio mientras se graba.
+      - _tick()   [línea 2004]
+      - start()   [línea 2014]
+      - stop()   [línea 2018]
+      - paintEvent(e: any)   [línea 2024]
+  - MainWindow()   [línea 2071]
+      - _on_stream_start()   [línea 2498]
+      - _on_stream_chunk(delta: any)   [línea 2504]
+      - _on_stream_end(keep: any)   [línea 2509]
+      - append_chat(text: any, kind: any, prompt_id: any = None)   [línea 2518]
+      - _add_bookmark(text: any)   [línea 2539]
+      - _goto_bookmark(item: any)   [línea 2550]
+      - _goto_bookmark_pos(pos: any)   [línea 2554]
+      - _toggle_prompt_nav(on: any)   [línea 2560]
+      - resizeEvent(e: any)   [línea 2569]
+      - _clear_bookmarks()   [línea 2575]
+      - refresh_models()   [línea 2579]
+      - _on_models_all(result: any)   [línea 2601]
+      - _apply_model_filter()   [línea 2627]
+      - open_model_picker()   [línea 2649]
+      - on_models_fail(err: any)   [línea 2658]
+      - choose_folder()   [línea 2664]
+      - add_folder(path: any)   [línea 2669]
+      - remove_folder()   [línea 2680]
+      - on_folder_selected(_index: any)   [línea 2690]
+      - set_folder(path: any, clear: bool = True)   [línea 2693]
+      - _ensure_contexto_txt()   [línea 2724]  — Crea contexto.txt si no existe en la carpeta de trabajo.
+      - index_project()   [línea 2735]
+      - refresh_files()   [línea 2741]
+      - _fill_tree(parent_item: any, path: any, depth: any)   [línea 2750]
+      - on_file_double(item: any, _col: any)   [línea 2806]
+      - _on_file_dropped(path: any)   [línea 2823]  — Archivo arrastrado desde el árbol al input del chat.
+      - _attach_image()   [línea 2832]  — Botón 📎 — abre un diálogo para elegir imágenes.
+      - _toggle_voice()   [línea 2841]  — Inicia/detiene la grabación de voz.
+      - _start_rec()   [línea 2848]  — Inicia grabación con ffmpeg.
+      - _stop_rec()   [línea 2887]  — Detiene la grabación y transcribe.
+      - _on_voice_done(text: any)   [línea 2933]
+      - _on_voice_error(err: any)   [línea 2950]
+      - _polish_text()   [línea 2954]  — Toma el texto del input, lo manda a un modelo liviano para pulirlo,
+      - _polish_request(base: any, model: any, key: any, text: any, session_id: str = '')   [línea 2985]  — Llama a la API para pulir el texto.
+      - _on_polish_done(result: any)   [línea 3026]
+      - _on_polish_error(err: any)   [línea 3037]
+      - _on_polish_error_final(err: any)   [línea 3053]
+      - _on_image_dropped(path: any)   [línea 3057]  — Imagen arrastrada al input — la agrega como preview pendiente.
+      - _refresh_img_preview()   [línea 3065]  — Reconstruye la zona de thumbnails de imágenes pendientes.
+      - _remove_image(path: any)   [línea 3102]
+      - _clear_images()   [línea 3107]
+      - open_selected_file()   [línea 3111]
+      - _on_files_changed()   [línea 3126]  — Se llama (vía señal) cuando la IA toca archivos durante el turno.
+      - _refresh_changes()   [línea 3131]
+      - _on_change_clicked(item: any)   [línea 3160]
+      - _clear_changes()   [línea 3169]
+      - open_skills()   [línea 3175]
+      - open_prefs()   [línea 3179]  — Abre el diálogo de preferencias del usuario.
+      - _folder_budget()   [línea 3200]  — Budget de tokens para la carpeta actual.
+      - _update_budget()   [línea 3205]  — Actualiza la barra de budget con el total de tokens usados.
+      - detect_run_configs()   [línea 3216]
+      - refresh_run_combo()   [línea 3231]
+      - on_run_activated(_index: any)   [línea 3239]
+      - open_run_dialog()   [línea 3249]
+      - run_config()   [línea 3261]
+      - stop_config()   [línea 3286]
+      - on_proc_finished(code: any, _status: any)   [línea 3293]
+      - _toggle_terminal()   [línea 3298]
+      - _run_file_in_terminal(path: any)   [línea 3303]  — Ejecuta un archivo .py/.js/.java en la terminal del workspace.
+      - _new_conv_path()   [línea 3339]
+      - _transcript()   [línea 3347]
+      - save_conv()   [línea 3355]
+      - load_conv(path: any)   [línea 3369]
+      - new_conv()   [línea 3406]
+      - delete_conv()   [línea 3422]
+      - on_conv_clicked(item: any)   [línea 3439]
+      - refresh_conv_list()   [línea 3447]
+      - pin_selected()   [línea 3469]
+      - unpin()   [línea 3479]
+      - refresh_pins()   [línea 3486]
+      - update_ctx_label()   [línea 3494]
+      - _fetch_ctx_limit()   [línea 3506]
+      - _set_ctx_limit(model: any, value: any)   [línea 3527]
+      - _strip_history_for_summary(history: any)   [línea 3531]  — Reemplaza contenidos grandes de save_file/edit_file con placeholders.
+      - summarize()   [línea 3557]
+      - on_summary(summary: any)   [línea 3614]
+      - _current_provider()   [línea 3634]
+      - send()   [línea 3642]
+      - on_done()   [línea 3715]
+      - _on_turn_usage(usage: any)   [línea 3745]  — Recibe el usage de un turno completo y lo acumula.
+      - _update_tok_display()   [línea 3760]
+      - _refresh_turn_list()   [línea 3768]  — Llena la pestaña 📊 Turnos con cada turno, tokens y checkbox.
+      - _on_turn_check_changed(item: any)   [línea 3807]  — Cuando se marca/desmarca un turno, lo excluye/incluye del contexto.
+      - _filtered_history()   [línea 3817]  — Devuelve el historial sin los turnos excluidos.
+      - _write_usage_md()   [línea 3835]  — Escribe usage-tokens.md junto a la conversación con tabla + barras.
+      - stop()   [línea 3882]
+      - closeEvent(e: any)   [línea 3887]
+
+Funciones:
+  - svg_icon(name: any)   [línea 247]  — Carga un SVG de iconos/ como QIcon.
+  - icon_btn(name: any, size: int = 36, bg: str = '#eab308', fg: str = '#000', tooltip: str = '')   [línea 253]  — Crea un botón cuadrado con icono SVG, fondo de color y tooltip.
+  - file_icon(name: any, is_dir: any)   [línea 377]
+  - folder_snapshot(root: any, depth: int = 2, max_entries: int = 40)   [línea 415]
+  - parse_action(text: any)   [línea 443]
+  - _salvage_save_file(text: any)   [línea 448]  — Intenta extraer un save_file de JSON truncado (path + content parcial).
+  - parse_actions(text: any)   [línea 467]  — Extrae todos los objetos JSON con clave "tool" del texto (en orden).
+  - render_message(m: any)   [línea 494]  — Convierte un mensaje del historial en (kind, texto visible para el chat).
+  - api_url(base: any, path: any)   [línea 1336]  — Une base + path sin duplicar /v1 (acepta bases con o sin /v1).
+  - fetch_models(base: any, key: str = '')   [línea 1344]
+  - is_audio_model(model_id: any)   [línea 1355]  — Heurística: ¿este modelo soporta transcripción de audio?
+  - filter_audio_models(all_models: any)   [línea 1361]  — Filtra la lista de 'provider::model' dejando solo los de audio.
+  - play_sound(name: any)   [línea 2057]  — Reproduce un sonido del sistema en un thread separado (no bloquea la UI).
+
+[generado por analyze_file]

@@ -8,6 +8,7 @@
 - 🗑 Descartar la entrada expandida, con confirmación.
 """
 import os
+import threading
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QMessageBox,
 )
 
-from utils.git_utils import GitUtils
+from UTILS.git_utils import GitUtils
 from UI.panels.changes_panel import _Tri, _CHK_SS
 
 
@@ -96,6 +97,7 @@ class StashPanel(QWidget):
     """Panel de Stash completo."""
 
     stash_changed = Signal()   # tras push/pop/drop → refrescar Changes
+    _stash_ready = Signal(object)  # payload del worker → _apply_stash
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,6 +105,10 @@ class StashPanel(QWidget):
         self.utils = None
         self._open_index = None   # entrada expandida (para Descartar)
         self._rows = {}           # index → (_StashRow, [_StashFileRow...])
+        self._fetch_gen = 0       # generación del fetch (descarta viejos)
+        self._fetching = False
+        self._fetch_pending = False
+        self._stash_ready.connect(self._apply_stash)
 
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -186,7 +192,36 @@ class StashPanel(QWidget):
                 it.widget().deleteLater()
         self._rows.clear()
         utils = self._utils()
-        entries = utils.stash_list() if utils else []
+        if utils is None:
+            self._apply_stash({"gen": self._fetch_gen, "entries": [],
+                               "is_repo": False})
+            return
+        # stash_list() spawnea git stash list + un stash show por
+        # entrada → daemon thread, nunca en el hilo UI.
+        if self._fetching:
+            self._fetch_pending = True   # re-correr al terminar
+            return
+        self._fetching = True
+        self._fetch_gen += 1
+        gen = self._fetch_gen
+
+        def _fetch():
+            self._stash_ready.emit({
+                "gen": gen, "entries": utils.stash_list(),
+                "is_repo": utils.is_repo()})
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _apply_stash(self, payload):
+        """(hilo UI) Construye la lista con las entradas del worker."""
+        self._fetching = False
+        if payload["gen"] != self._fetch_gen:
+            return                      # llegó un fetch viejo
+        if self._fetch_pending:
+            self._fetch_pending = False
+            self.refresh()
+            return
+        entries = payload["entries"]
         if not entries:
             empty = QLabel("El bolsillo está vacío\n\n"
                            "📥 Guardá cambios con el botón de arriba, o desde "
@@ -209,7 +244,7 @@ class StashPanel(QWidget):
         has = bool(entries)
         self.btn_pop.setEnabled(has)
         self.btn_drop.setEnabled(has)
-        self.btn_stash.setEnabled(utils is not None and utils.is_repo())
+        self.btn_stash.setEnabled(payload["is_repo"])
 
     def _utils(self):
         win = self.window()

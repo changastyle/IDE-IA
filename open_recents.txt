@@ -1,2 +1,2 @@
-/Users/nico/Desktop/sub-carpeta-for-test
-/private/var/folders/jj/x2_mf0ss3gvgsrsxm74btx500000gn/T/tmpg7p2jzqp
+C:\Users\Nico\Desktop\snake-web
+C:\Users\Nico\Desktop

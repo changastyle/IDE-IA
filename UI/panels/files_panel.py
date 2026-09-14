@@ -3,31 +3,31 @@
 
 Header con título + acciones, y árbol de archivos con iconos por extensión.
 La fila de carpeta muestra nombre + ruta relativa, como IntelliJ.
-Incluye QFileSystemWatcher para auto-refrescar cuando cambian archivos.
+El watcher y el análisis de archivos corren en FileWatchService
+(UTILS/CORE-SERVICES) — este panel es solo UI: se suscribe a
+changed/diffs_ready/busy del servicio.
 Muestra badges +N/-N de líneas cambiadas al lado de cada archivo.
 """
 import os
 
-from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QKeyEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTreeWidget,
     QTreeWidgetItem, QHeaderView, QMenu, QMessageBox, QInputDialog,
 )
 
+# Lógica de análisis de archivos (filtros, walks, conteo de líneas)
+# vive en UTILS/FILE-UTILS — este panel es solo UI.
+from UTILS.file_utils import RUNNABLE_EXTS, list_entries
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ICONS_DIR = os.path.join(APP_DIR, "iconos")
+ICONS_DIR = os.path.join(APP_DIR, "UI", "iconos")
 
 EXT_ICONS = {
     ".html": "html", ".htm": "html", ".css": "css", ".js": "js",
     ".py": "python", ".json": "json", ".md": "markdown", ".txt": "txt",
 }
-
-RUNNABLE_EXTS = {".py", ".js", ".java"}
-
-IGNORED_DIRS = {".git", "__pycache__", ".idea", "node_modules", ".venv", "venv",
-                "ns-code"}
-
 
 def file_icon(name, is_dir):
     if is_dir:
@@ -82,58 +82,38 @@ class FilesPanel(QWidget):
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self.tree.itemDoubleClicked.connect(self._on_double)
         self.tree.itemClicked.connect(self._on_click)
+        # Lazy loading: las subcarpetas se cargan al expandir
+        self.tree.itemExpanded.connect(self._on_item_expanded)
         # Teclas: F2 = renombrar, Delete = eliminar
         self._orig_key_press = self.tree.keyPressEvent
         self.tree.keyPressEvent = self._tree_key_press
         v.addWidget(self.tree, 1)
 
-        # ---- File system watcher ----
-        self._watcher = QFileSystemWatcher()
-        self._watcher.directoryChanged.connect(self._on_fs_changed)
-        self._watcher.fileChanged.connect(self._on_fs_file_changed)
-        # Debounce: esperar 300ms después del último cambio antes de refrescar
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.setSingleShot(True)
-        self._refresh_timer.timeout.connect(self._refresh_from_watch)
+        # Indicador de escaneo — lo maneja FileWatchService (señal busy)
+        self.lbl_scan = QLabel("◌  Escaneando archivos…")
+        self.lbl_scan.setStyleSheet(
+            "color:#8e8e93; font-size:10px; padding:2px 6px; "
+            "background:transparent;")
+        self.lbl_scan.hide()
+        v.addWidget(self.lbl_scan)
 
     # ---- API pública ----
     def set_root(self, path):
         self.root_path = path or ""
         self._file_lines = {}
         self._file_diffs = {}
-        self._setup_watcher()
         self.refresh()
-        # Establecer baseline de líneas después del primer refresh
-        self._update_diffs()
         self.root_changed.emit(self.root_path)
 
-    def _setup_watcher(self):
-        """Configura el QFileSystemWatcher para la carpeta actual."""
-        self._watcher.removePaths(self._watcher.files() + self._watcher.directories())
-        if not self.root_path or not os.path.isdir(self.root_path):
-            return
-        # Vigilar la carpeta raíz y todas las subcarpetas (no recursivas ignoradas)
-        dirs_to_watch = [self.root_path]
-        for dirpath, dirnames, filenames in os.walk(self.root_path):
-            dirnames[:] = [d for d in dirnames
-                          if d not in IGNORED_DIRS and not d.startswith(".")]
-            dirs_to_watch.append(dirpath)
-        # QFileSystemWatcher tiene límite de paths, vigilar solo carpetas
-        self._watcher.addPaths(dirs_to_watch)
+    def set_scanning(self, on):
+        """Slot para FileWatchService.busy — muestra/oculta el indicador."""
+        self.lbl_scan.setVisible(bool(on))
 
-    def _on_fs_changed(self, _path):
-        """Cambio en el filesystem — debounce 300ms."""
-        self._refresh_timer.start(300)
+    def repaint(self):
+        """refresh() sin perder expansión ni selección.
 
-    def _on_fs_file_changed(self, path):
-        """Un archivo específico cambió — trackear diff de líneas."""
-        self._refresh_timer.start(300)
-
-    def _refresh_from_watch(self):
-        """Refresca el árbol preservando el estado de expansión y selección."""
-        if not self.root_path or not os.path.isdir(self.root_path):
-            return
-        # Guardar paths expandidos y seleccionados
+        Slot público: lo llama FileWatchService.changed (hilo UI).
+        """
         expanded = set()
         selected = None
         for i in range(self.tree.topLevelItemCount()):
@@ -143,11 +123,7 @@ class FilesPanel(QWidget):
             p = cur.data(0, Qt.UserRole)
             if p:
                 selected = p
-        # Actualizar diffs antes de refrescar
-        self._update_diffs()
-        # Refrescar
         self.refresh()
-        # Restaurar expansión y selección
         for i in range(self.tree.topLevelItemCount()):
             self._restore_expanded(self.tree.topLevelItem(i), expanded)
         if selected:
@@ -163,47 +139,54 @@ class FilesPanel(QWidget):
     def _restore_expanded(self, item, expanded_set):
         path = item.data(0, Qt.UserRole)
         if path and path in expanded_set:
+            # setExpanded emite itemExpanded → _ensure_filled carga los
+            # hijos antes de seguir bajando por el árbol
             item.setExpanded(True)
         for i in range(item.childCount()):
             self._restore_expanded(item.child(i), expanded_set)
 
     def _select_path(self, path):
-        """Selecciona el item cuyo path coincide."""
-        for i in range(self.tree.topLevelItemCount()):
-            it = self._find_item_by_path(self.tree.topLevelItem(i), path)
-            if it:
-                self.tree.setCurrentItem(it)
-                return
-
-    def _find_item_by_path(self, item, path):
-        if item.data(0, Qt.UserRole) == path:
-            return item
-        for i in range(item.childCount()):
-            r = self._find_item_by_path(item.child(i), path)
-            if r:
-                return r
-        return None
-
-    def _update_diffs(self):
-        """Compara líneas actuales vs baseline para cada archivo."""
-        if not self.root_path:
+        """Selecciona el item cuyo path coincide, cargando el camino
+        nivel por nivel (el árbol es lazy: los hijos no existen hasta
+        que la carpeta se expande)."""
+        if not self.root_path or not path.startswith(self.root_path):
             return
-        for dirpath, dirnames, filenames in os.walk(self.root_path):
-            dirnames[:] = [d for d in dirnames
-                          if d not in IGNORED_DIRS and not d.startswith(".")]
-            for fname in filenames:
-                fpath = os.path.join(dirpath, fname)
-                try:
-                    with open(fpath, encoding="utf-8", errors="replace") as f:
-                        lines = sum(1 for _ in f)
-                except (OSError, UnicodeDecodeError):
-                    continue
-                old = self._file_lines.get(fpath)
-                if old is not None:
-                    diff = lines - old
-                    if diff != 0:
-                        self._file_diffs[fpath] = diff
-                self._file_lines[fpath] = lines
+        item = self.tree.topLevelItem(0)
+        if item is None:
+            return
+        rel = os.path.relpath(path, self.root_path)
+        if rel == ".":
+            self.tree.setCurrentItem(item)
+            return
+        for part in rel.split(os.sep):
+            self._ensure_filled(item)
+            nxt = None
+            for i in range(item.childCount()):
+                c = item.child(i)
+                if c.data(0, Qt.UserRole) == os.path.join(
+                        item.data(0, Qt.UserRole), part):
+                    nxt = c
+                    break
+            if nxt is None:
+                return
+            item = nxt
+        self.tree.setCurrentItem(item)
+
+    def apply_diffs(self, root, counts):
+        """Slot para FileWatchService.diffs_ready (hilo UI).
+
+        Vuelca los conteos del worker y repinta los badges +N/-N.
+        """
+        if root != self.root_path:
+            return
+        for fpath, lines in counts.items():
+            old = self._file_lines.get(fpath)
+            if old is not None:
+                diff = lines - old
+                if diff != 0:
+                    self._file_diffs[fpath] = diff
+        self._file_lines.update(counts)
+        self.repaint()
 
     def refresh(self):
         self.tree.clear()
@@ -224,38 +207,30 @@ class FilesPanel(QWidget):
 
     # ---- internals ----
     def _fill(self, parent_item, dir_path):
-        try:
-            entries = sorted(
-                os.scandir(dir_path),
-                key=lambda e: (not e.is_dir(), e.name.lower()))
-        except OSError:
-            return
-        for e in entries:
-            if e.name.startswith(".") and e.name not in (".gitignore",):
-                continue
-            if e.is_dir(follow_symlinks=False):
-                if e.name in IGNORED_DIRS:
-                    continue
+        for name, path, is_dir in list_entries(dir_path):
+            if is_dir:
                 it = QTreeWidgetItem()
-                it.setText(0, e.name)
-                it.setIcon(0, file_icon(e.name, True))
-                it.setData(0, Qt.UserRole, e.path)
+                it.setText(0, name)
+                it.setIcon(0, file_icon(name, True))
+                it.setData(0, Qt.UserRole, path)
                 it.setData(0, Qt.UserRole + 1, "dir")
+                # Lazy: marcar sin llenar + hijo dummy para la flecha
+                it.setData(0, Qt.UserRole + 2, "unfilled")
+                it.addChild(QTreeWidgetItem())
                 parent_item.addChild(it)
-                self._fill(it, e.path)
             else:
                 it = QTreeWidgetItem()
-                it.setText(0, e.name)
-                it.setIcon(0, file_icon(e.name, False))
-                it.setData(0, Qt.UserRole, e.path)
+                it.setText(0, name)
+                it.setIcon(0, file_icon(name, False))
+                it.setData(0, Qt.UserRole, path)
                 it.setData(0, Qt.UserRole + 1, "file")
-                it.setToolTip(0, e.path)
+                it.setToolTip(0, path)
                 parent_item.addChild(it)
                 # Columna de acciones: badge de diff + botones play/bookmark
                 # en UN solo widget (evita columnas muertas)
-                ext = os.path.splitext(e.name)[1].lower()
+                ext = os.path.splitext(name)[1].lower()
                 runnable = ext in RUNNABLE_EXTS
-                diff = self._file_diffs.get(e.path)
+                diff = self._file_diffs.get(path)
                 has_badge = diff is not None and diff != 0
                 if runnable or has_badge:
                     from PySide6.QtWidgets import QWidget, QHBoxLayout
@@ -286,9 +261,9 @@ class FilesPanel(QWidget):
                         btn.setStyleSheet(
                             "QPushButton { background:transparent; border:none; }"
                             "QPushButton:hover { background:#22c55e33; border-radius:2px; }")
-                        btn.setToolTip(f"Ejecutar {e.name}")
+                        btn.setToolTip(f"Ejecutar {name}")
                         btn.clicked.connect(
-                            lambda _, p=e.path: self.run_requested.emit(p))
+                            lambda _, p=path: self.run_requested.emit(p))
                         lo.addWidget(btn)
                         # Play + Bookmark (guardar como run config)
                         btn_bm = QPushButton()
@@ -298,11 +273,21 @@ class FilesPanel(QWidget):
                         btn_bm.setStyleSheet(
                             "QPushButton { background:transparent; border:none; }"
                             "QPushButton:hover { background:#2f6fdb33; border-radius:2px; }")
-                        btn_bm.setToolTip(f"Guardar y ejecutar {e.name} como configuración")
+                        btn_bm.setToolTip(f"Guardar y ejecutar {name} como configuración")
                         btn_bm.clicked.connect(
-                            lambda _, p=e.path: self.save_run_config.emit(p))
+                            lambda _, p=path: self.save_run_config.emit(p))
                         lo.addWidget(btn_bm)
                     self.tree.setItemWidget(it, 1, btns)
+
+    def _ensure_filled(self, item):
+        """Carga los hijos reales de una carpeta marcada 'unfilled'."""
+        if item.data(0, Qt.UserRole + 2) == "unfilled":
+            item.setData(0, Qt.UserRole + 2, None)
+            item.takeChildren()  # quita el dummy
+            self._fill(item, item.data(0, Qt.UserRole))
+
+    def _on_item_expanded(self, item):
+        self._ensure_filled(item)
 
     def _on_double(self, item, _col):
         path = item.data(0, Qt.UserRole)

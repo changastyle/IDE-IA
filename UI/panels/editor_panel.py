@@ -9,15 +9,14 @@
 import os
 import difflib
 
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import (
     QFont, QColor, QSyntaxHighlighter, QTextCharFormat, QTextCursor,
     QKeySequence, QShortcut, QTextBlockUserData, QTextFormat, QPixmap,
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QPlainTextEdit,
-    QTextEdit, QLabel, QPushButton, QFileDialog, QMessageBox, QScrollArea,
-    QTabBar, QStyle, QStyleOptionTab,
+    QTextEdit, QLabel, QPushButton, QMessageBox, QScrollArea,
 )
 
 
@@ -29,7 +28,7 @@ class _DiffData(QTextBlockUserData):
         self.flag = None
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ICONS_DIR = os.path.join(APP_DIR, "iconos")
+ICONS_DIR = os.path.join(APP_DIR, "UI", "iconos")
 
 EXT_LANG = {
     ".py": "python", ".js": "javascript", ".html": "html",
@@ -958,7 +957,7 @@ class EditorPanel(QWidget):
         v.addWidget(self.status)
 
         # ---- Shortcuts configurables ----
-        from utils.shortcuts import load_shortcuts
+        from UTILS.shortcuts import load_shortcuts
         self._shortcuts = load_shortcuts()
         self._shortcut_objs = []
         self._apply_shortcuts()
@@ -1012,7 +1011,7 @@ class EditorPanel(QWidget):
 
     def reload_shortcuts(self):
         """Recarga los shortcuts desde el archivo (tras cambiar en settings)."""
-        from utils.shortcuts import load_shortcuts
+        from UTILS.shortcuts import load_shortcuts
         self._shortcuts = load_shortcuts()
         self._apply_shortcuts()
 

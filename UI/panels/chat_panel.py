@@ -21,22 +21,21 @@ import shutil
 import subprocess
 import sys
 import difflib
-from datetime import datetime
+import threading
 
 from PySide6.QtCore import Qt, Signal, QThread, QTimer, QSettings, QSize
-from PySide6.QtCore import QRectF, QPointF, QRect, QPoint
-from PySide6.QtGui import QFont, QTextCursor, QIcon, QPixmap, QTextOption
+from PySide6.QtCore import QPointF, QRect, QPoint
+from PySide6.QtGui import QTextCursor, QIcon, QTextOption
 from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
-    QPlainTextEdit, QComboBox, QLineEdit, QCheckBox, QMessageBox,
-    QFileDialog, QInputDialog, QSplitter, QFrame, QListWidget, QListWidgetItem,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QPlainTextEdit, QLineEdit, QCheckBox, QMessageBox,
+    QInputDialog, QSplitter, QFrame, QListWidget, QListWidgetItem,
     QScrollArea, QSizePolicy, QToolTip, QDialog, QProgressBar, QLayout,
     QToolButton, QTabBar,
 )
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ICONS_DIR = os.path.join(APP_DIR, "iconos")
+ICONS_DIR = os.path.join(APP_DIR, "UI", "iconos")
 
 LMSTUDIO = os.environ.get("LMSTUDIO_URL", "http://172.27.247.113:1234")
 MAX_ITER = 10
@@ -1208,7 +1207,7 @@ class PromptBlock(QFrame):
     @staticmethod
     def _md(text):
         """Markdown → HTML para mostrar respuestas formateadas."""
-        from utils.markdown_utils import md_to_html
+        from UTILS.markdown_utils import md_to_html
         return md_to_html(text)
 
     def add_response_text(self, text, color="#c8ccd4", mono=False):
@@ -2038,8 +2037,14 @@ class ModelPopup(QDialog):
 
     def _rediscover(self):
         if self._refresh_cb:
-            self.all_models = list(self._refresh_cb() or [])
-        self._render()
+            # fetch async → la lista llega por set_models al terminar
+            self._refresh_cb(self.set_models)
+
+    def set_models(self, models):
+        """Callback del fetch async de modelos (corre en el hilo UI)."""
+        self.all_models = list(models or [])
+        if self.isVisible():
+            self._render()
 
 
 class ChatPanel(QWidget):
@@ -2050,6 +2055,7 @@ class ChatPanel(QWidget):
     file_auto_open = Signal(str, int)  # path relativo + línea a scrollear
     file_review = Signal(str, str)     # path relativo + contenido "antes"
     file_resolved = Signal(str, bool)  # path relativo + accepted? (desde card)
+    _models_fetched = Signal(list, dict)  # (refs, pricing) desde el thread
 
     COLORS = {"user": "#eab308", "tool": "#8e8e93", "error": "#ff453a",
               "stats": "#32ade6", "assistant": "#e8eaed"}
@@ -2112,6 +2118,9 @@ class ChatPanel(QWidget):
         self._current_ref = ""   # ref "Provider::modelo" activo
         self._all_models = []    # refs descubiertos
         self._pricing = {}       # ref → dict de precios (si el provider lo da)
+        self._models_fetching = False  # fetch de /models en curso
+        self._models_cbs = []          # callbacks on_done pendientes
+        self._models_fetched.connect(self._apply_models)
         self.model_chip = QToolButton()
         self.model_chip.setObjectName("modelChip")
         self.model_chip.setToolTip("Modelo de IA — clic para elegir")
@@ -2225,7 +2234,7 @@ class ChatPanel(QWidget):
         ctx_row.addStretch(1)
         bot_l.addLayout(ctx_row)
         # Audio meter
-        from utils.ia import AudioMeter
+        from UTILS.ia import AudioMeter
         self.audio_meter = AudioMeter()
         self.audio_meter.setVisible(False)
         bot_l.addWidget(self.audio_meter)
@@ -2315,6 +2324,11 @@ class ChatPanel(QWidget):
 
     def _convs_dir(self):
         """Crea y devuelve <workspace>/ng-studio-stuff/conversaciones/."""
+        import importlib
+        mark_no_index = importlib.import_module(
+            "UTILS.VS-CODE-INTELLIJ-IGNORE-NG-STUDIO-STUFF-FOLDER-UTILS"
+        ).mark_no_index
+        mark_no_index(os.path.join(self.tools.root, STUFF_DIR))
         d = os.path.join(self.tools.root, STUFF_DIR, CONVS_SUBDIR)
         os.makedirs(d, exist_ok=True)
         return d
@@ -2703,11 +2717,30 @@ class ChatPanel(QWidget):
         self.settings.setValue("prefs", json.dumps(self.prefs))
         self._update_chip()
 
-    def refresh_models(self):
-        """Descubre modelos de todos los providers configurados."""
+    def refresh_models(self, on_done=None):
+        """Descubre modelos de todos los providers — en un daemon thread.
+
+        El requests.get a /models puede tardar el timeout entero (8s)
+        por provider si está apagado → NUNCA en el hilo UI (congelaba
+        la app ~17s al arrancar con 2 chats). on_done(all_models) corre
+        en el hilo UI al terminar (lo usa el popup de modelos).
+        Devuelve la lista actual, que puede ser vieja.
+        """
+        if callable(on_done):
+            self._models_cbs.append(on_done)
+        if self._models_fetching:
+            return self._all_models
+        self._models_fetching = True
+        providers = dict(self.providers)
+        threading.Thread(target=self._fetch_models_worker,
+                         args=(providers,), daemon=True).start()
+        return self._all_models
+
+    def _fetch_models_worker(self, providers):
+        """(thread) Pide /models a cada provider configurado."""
         all_models = []
         pricing = {}
-        for pname, cfg in self.providers.items():
+        for pname, cfg in providers.items():
             base = cfg.get("base", LMSTUDIO)
             key = cfg.get("key", "")
             try:
@@ -2718,6 +2751,11 @@ class ChatPanel(QWidget):
                 all_models.append(f"{pname}::{m}")
                 if pr:
                     pricing[f"{pname}::{m}"] = pr
+        self._models_fetched.emit(all_models, pricing)
+
+    def _apply_models(self, all_models, pricing):
+        """(hilo UI) Vuelca el resultado del fetch y dispara callbacks."""
+        self._models_fetching = False
         self._all_models = all_models
         self._pricing.clear()
         self._pricing.update(pricing)
@@ -2730,16 +2768,22 @@ class ChatPanel(QWidget):
             pin = next((r for r in self.pinned if r in all_models), "")
             self._current_ref = pin or (all_models[0] if all_models else "")
         self._update_chip()
-        return all_models
+        cbs, self._models_cbs = self._models_cbs, []
+        for cb in cbs:
+            try:
+                cb(all_models)
+            except Exception:
+                pass
 
     def _open_model_popup(self):
         """Popup de selección: pineados (clic = usar) + todos
         (clic = pinear/despinear)."""
-        if not self._all_models:
-            self.refresh_models()
         dlg = ModelPopup(self, self.pinned, self._all_models,
                          self._current_ref, refresh_cb=self.refresh_models,
                          pricing=self._pricing)
+        if not self._all_models:
+            # fetch async → el popup se actualiza solo cuando llega
+            self.refresh_models(dlg.set_models)
         pos = self.model_chip.mapToGlobal(QPoint(0, self.model_chip.height()))
         dlg.adjustSize()
         screen = self.screen().availableGeometry()
@@ -2768,7 +2812,7 @@ class ChatPanel(QWidget):
 
     def _open_model_picker(self):
         """Abre el diálogo de modelos y providers (pin models, add/del)."""
-        from utils.ia import ModelPickerDialog
+        from UTILS.ia import ModelPickerDialog
         dlg = ModelPickerDialog(self, self.providers, self.pinned)
         if dlg.exec():
             self.providers = dlg.providers
@@ -2779,7 +2823,7 @@ class ChatPanel(QWidget):
 
     def _open_prefs(self):
         """Abre el diálogo de preferencias (modelos, voz, tokens)."""
-        from utils.ia import PrefsDialog
+        from UTILS.ia import PrefsDialog
         all_models = getattr(self, "_all_models", [])
         dlg = PrefsDialog(self, self.prefs, all_models)
         if dlg.exec():
@@ -2846,7 +2890,7 @@ class ChatPanel(QWidget):
         self.btn_mic.setToolTip("Grabando… clic para parar")
         self.audio_meter.setVisible(True)
         self.audio_meter.start()
-        from utils.ia import play_sound
+        from UTILS.ia import play_sound
         play_sound("rec_start")
         self._rec_timer = QTimer(self)
         self._rec_timer.setSingleShot(True)
@@ -2872,7 +2916,7 @@ class ChatPanel(QWidget):
         self.btn_mic.setToolTip("Hablar: clic para grabar")
         self.audio_meter.stop()
         self.audio_meter.setVisible(False)
-        from utils.ia import play_sound
+        from UTILS.ia import play_sound
         play_sound("rec_stop")
         audio = self._rec_wav
         if not audio or not os.path.exists(audio):
@@ -2883,7 +2927,7 @@ class ChatPanel(QWidget):
         self.lbl_transcribing.setText("🎙 Transcribiendo voz… 0s")
         self.lbl_transcribing.setVisible(True)
         self._transcribe_timer.start(1000)
-        from utils.ia import VoiceTranscriber
+        from UTILS.ia import VoiceTranscriber
         whisper_model = self.prefs.get("whisper_model", "base")
         if self.prefs.get("voice_ia", False):
             ref = self.prefs.get("voice_model", "")

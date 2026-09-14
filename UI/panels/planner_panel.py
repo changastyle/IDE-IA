@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ICONS_DIR = os.path.join(APP_DIR, "iconos")
+ICONS_DIR = os.path.join(APP_DIR, "UI", "iconos")
 
 STUFF_DIR = "ng-studio-stuff"   # carpeta interna del workspace abierto
 PLANNER_SUBDIR = "planner"
@@ -1383,6 +1383,11 @@ class PlannerPanel(QWidget):
                             if self.root else "")
         if self.planner_dir:
             try:
+                import importlib
+                mark_no_index = importlib.import_module(
+                    "UTILS.VS-CODE-INTELLIJ-IGNORE-NG-STUDIO-STUFF-FOLDER-UTILS"
+                ).mark_no_index
+                mark_no_index(os.path.join(self.root, STUFF_DIR))
                 os.makedirs(self.planner_dir, exist_ok=True)
             except OSError:
                 pass

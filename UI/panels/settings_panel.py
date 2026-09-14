@@ -9,10 +9,10 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
     QLabel, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QKeySequenceEdit, QMessageBox, QPlainTextEdit, QSplitter,
+    QKeySequenceEdit, QPlainTextEdit, QSplitter,
 )
 
-from utils.shortcuts import (
+from UTILS.shortcuts import (
     load_shortcuts, save_shortcuts, reset_shortcuts, DEFAULT_SHORTCUTS,
 )
 
@@ -113,7 +113,7 @@ def _parse_commits(detail_text):
 
 
 def _parse_version_md(text):
-    """Extrae los builds de un archivo CI-CD-LOCAL/version-*.md."""
+    """Extrae los builds de un archivo OUT/version-*.md."""
     builds = []
     for block in re.split(r"(?=^## Build )", text, flags=re.M):
         head = block.splitlines()[0] if block else ""
@@ -157,15 +157,15 @@ def _parse_version_md(text):
 
 
 def _find_version_files():
-    """Busca los version-*.md en CI-CD-LOCAL/ (bundle PyInstaller, raíz o cwd)."""
+    """Busca los version-*.md en OUT/ (bundle PyInstaller, raíz o cwd)."""
     roots = []
     meipass = getattr(sys, "_MEIPASS", None)  # dentro del .exe/.app empaquetado
     if meipass:
-        roots.append(os.path.join(meipass, "CI-CD-LOCAL"))
+        roots.append(os.path.join(meipass, "OUT"))
     project_root = os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__))))
-    roots.append(os.path.join(project_root, "CI-CD-LOCAL"))
-    roots.append(os.path.join(os.getcwd(), "CI-CD-LOCAL"))
+    roots.append(os.path.join(project_root, "OUT"))
+    roots.append(os.path.join(os.getcwd(), "OUT"))
 
     files = []
     for d in dict.fromkeys(roots):
@@ -344,7 +344,7 @@ class VersionsTab(QWidget):
     def _fill_footer(self):
         if not self._builds:
             self.lbl_version.setText(
-                "Sin builds registrados — ejecutá un script de CI-CD-LOCAL/ "
+                "Sin builds registrados — ejecutá un script de OUT/ "
                 "para compilar y generar el historial.")
             return
         cur = _current_platform()

@@ -1,0 +1,15 @@
+[PASS] list_monitors() devuelve monitores  (1 detectados)
+[PASS] monitor 0: tiene todas las claves
+[PASS] monitor 0: resolución válida  (2560x1440)
+[PASS] monitor 0: área disponible coherente  (2560x1392)
+[PASS] exactamente un monitor primary  (1 primaries)
+[PASS] largest_screen() devuelve un QScreen
+[PASS] largest_screen() coincide con el de mayor área disponible  (2560x1392)
+[PASS] check_monitor_resolution() devuelve (w, h) del más grande  ((2560, 1392))
+[PASS] fit_window_to_largest() mueve la ventana al monitor más grande  (Mi Monitor)
+
+Monitores detectados:
+  Mi Monitor [primary]: 2560x1440 (disponible 2560x1392 en 0,0)
+
+9 checks, 0 fallos
+RESOLUCION FINAL SUGERIDA : 2560 X 1392

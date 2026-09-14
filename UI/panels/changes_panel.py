@@ -7,6 +7,7 @@
 - Abajo: commits de la rama actual con la pill de la rama en su color único.
 """
 import os
+import threading
 
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QColor
@@ -15,11 +16,11 @@ from PySide6.QtWidgets import (
     QLineEdit, QCheckBox, QScrollArea, QTreeWidget, QTreeWidgetItem,
 )
 
-from utils.git_utils import GitUtils
-from utils.git import push
+from UTILS.git_utils import GitUtils
+from UTILS.git import push
 
 ICONOS = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))), "iconos")
+    os.path.abspath(__file__))), "iconos")
 
 BTN_GEN = "#a78bfa"
 BTN_COMMIT = "#3574f0"
@@ -44,10 +45,10 @@ _CHK_SS = (
     "QCheckBox::indicator{width:16px;height:16px;border-radius:4px;"
     "border:1px solid #555a63;background:#1e1f22;}"
     f"QCheckBox::indicator:checked{{background:#3574f0;border-color:#3574f0;"
-    f"image:url({os.path.join(ICONOS, 'check_w.svg')});}}"
+    f"image:url({os.path.join(ICONOS, 'check_w.svg').replace(os.sep, '/')});}}"
     f"QCheckBox::indicator:indeterminate{{background:#3574f0;"
     f"border-color:#3574f0;"
-    f"image:url({os.path.join(ICONOS, 'rayita_w.svg')});}}"
+    f"image:url({os.path.join(ICONOS, 'rayita_w.svg').replace(os.sep, '/')});}}"
 )
 
 
@@ -173,6 +174,7 @@ class ChangesPanel(QWidget):
     diff_requested = Signal(str)      # path relativo → abrir panel de Diff
     committed = Signal(bool)          # True si hay que pushear después
     generate_requested = Signal()
+    _changes_ready = Signal(object)   # payload del worker → _apply_changes
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -181,6 +183,10 @@ class ChangesPanel(QWidget):
         self._files = []          # [{path, tracked, state, lines, total}]
         self._rows = {}           # path → _FileRow
         self._groups = {}
+        self._fetch_gen = 0       # generación del fetch (descarta viejos)
+        self._fetching = False
+        self._fetch_pending = False
+        self._changes_ready.connect(self._apply_changes)
         # El auto-refresco lo maneja listeners.GitListener (watcher + poll
         # central que avisa a todos los componentes suscriptos).
 
@@ -349,8 +355,51 @@ class ChangesPanel(QWidget):
             self._refresh_history()
             return
 
-        changed, untracked = self.utils.status()
+        # Fetch pesado (git status + diff por archivo + historial) en
+        # un daemon thread — en repos grandes tardaba varios segundos
+        # y congelaba la UI al arrancar / en cada cambio del watcher.
+        if self._fetching:
+            self._fetch_pending = True   # re-correr al terminar
+            return
+        self._fetching = True
+        self._fetch_gen += 1
+        gen = self._fetch_gen
+        utils = self.utils
         prev = {f["path"]: f for f in self._files}
+
+        def _fetch():
+            changed, untracked = utils.status()
+            rows_of = {}
+            for p in changed:
+                try:
+                    rows_of[p] = utils.diff_rows(p)
+                except Exception:
+                    rows_of[p] = []
+            cur = utils.current_branch()
+            try:
+                color = utils.branch_color(cur)
+            except Exception:
+                color = "#3574f0"
+            commits = utils.branch_commits(cur or "HEAD", limit=40)
+            self._changes_ready.emit({
+                "gen": gen, "changed": changed, "untracked": untracked,
+                "rows_of": rows_of, "prev": prev,
+                "branch": cur, "color": color, "commits": commits})
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _apply_changes(self, data):
+        """(hilo UI) Construye la lista con el payload del worker."""
+        self._fetching = False
+        if data["gen"] != self._fetch_gen:
+            return                      # llegó un fetch viejo
+        if self._fetch_pending:
+            self._fetch_pending = False
+            self.refresh()
+            return
+        changed, untracked = data["changed"], data["untracked"]
+        rows_of = data["rows_of"]
+        prev = data["prev"]
         self._files = []
         for group, paths, tracked in (
                 ("Changes", changed, True),
@@ -364,11 +413,9 @@ class ChangesPanel(QWidget):
                 self.list_lay.addWidget(g)
             rows = []
             for p in paths:
-                try:
-                    total = sum(1 for r in self.utils.diff_rows(p)
-                                if r["kind"] in ("add", "mod"))
-                except Exception:
-                    total = 0
+                file_rows = rows_of.get(p, [])
+                total = sum(1 for r in file_rows
+                            if r["kind"] in ("add", "mod"))
                 old = prev.get(p)
                 if old and old["total"] == total:
                     f = dict(old)
@@ -376,6 +423,7 @@ class ChangesPanel(QWidget):
                     f = {"path": p, "tracked": tracked, "total": total,
                          "state": Qt.Checked,
                          "lines": None}  # None = todas
+                f["rows"] = file_rows   # cache → _update_stats no re-git
                 self._files.append(f)
                 row = _FileRow(p, tracked)
                 row.chk.setCheckState(f["state"])
@@ -400,7 +448,7 @@ class ChangesPanel(QWidget):
             g.chk.blockSignals(False)
         self.list_lay.addStretch(1)
         self._update_stats()
-        self._refresh_history()
+        self._apply_history(data["branch"], data["color"], data["commits"])
 
     def _group_state(self, rows):
         states = [r.chk.checkState() for r in rows]
@@ -457,7 +505,11 @@ class ChangesPanel(QWidget):
         for f in self._files:
             if f["state"] == Qt.Unchecked:
                 continue
-            for r in self.utils.diff_rows(f["path"]):
+            rows = f.get("rows")
+            if rows is None:            # sin cache (selección manual)
+                rows = self.utils.diff_rows(f["path"])
+                f["rows"] = rows
+            for r in rows:
                 if f["state"] == Qt.PartiallyChecked \
                    and r["kind"] in ("add", "mod") \
                    and r["right_n"] not in (f["lines"] or set()):
@@ -566,20 +618,20 @@ class ChangesPanel(QWidget):
 
     # ---- historial ----
     def _refresh_history(self):
+        """Sin repo: solo limpia (el fetch del historial va en el worker
+        de refresh → _apply_history)."""
         self.tree_hist.clear()
         if not self.utils or not self.utils.is_repo():
             self.pill_branch.setText("")
-            return
-        cur = self.utils.current_branch()
-        try:
-            color = self.utils.branch_color(cur)
-        except Exception:
-            color = "#3574f0"
+
+    def _apply_history(self, cur, color, commits):
+        """(hilo UI) Pinta pill de rama + commits con datos del worker."""
+        self.tree_hist.clear()
         self.pill_branch.setText(cur or "detached")
         self.pill_branch.setStyleSheet(
             f"background:{color}; color:#fff; font-size:11px;"
             "font-weight:bold; border-radius:10px; padding:2px 10px;")
-        for c in self.utils.branch_commits(cur or "HEAD", limit=40):
+        for c in commits:
             it = QTreeWidgetItem(
                 [c["date"], c["subject"], c["author"], c["short"]])
             it.setForeground(0, QColor("#8e8e93"))

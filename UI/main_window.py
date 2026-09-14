@@ -4,7 +4,7 @@ Estructura:
   ┌────────────────────────────────────────────────────────┐
   │ TopBar (50px, todo el ancho)                           │
   ├────┬───────────────────────────────────────────────────┤
-  │ H  │  Body del body: 3 paneles intercambiables        │
+  │ H  │  Body del body: 3 paneles intercambiables         │
   │ o  │  ┌──────────┬───────────────┬──────────┐          │
   │ t  │  │ Panel 1  │   Panel 2     │ Panel 3  │          │
   │ b  │  └──────────┴───────────────┴──────────┘          │
@@ -25,29 +25,24 @@ import shlex
 import subprocess
 import zlib
 
-try:
-    import pty as _pty
-except ImportError:  # Windows: pty no existe
-    _pty = None
-import signal as _signal
-from PySide6.QtCore import (Qt, QMimeData, QPoint, Signal, QProcess, QSize,
-                            QTimer, QSocketNotifier)
+from PySide6.QtCore import (Qt, QMimeData, QPoint, Signal, QSize,
+                            QTimer)
 from PySide6.QtGui import (QDrag, QColor, QPainter, QFont, QAction, QIcon,
                            QTextCursor, QKeySequence, QPixmap, QPen, QImage)
-from PySide6.QtCore import QRectF, QPointF
+from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSplitter, QPlainTextEdit, QMenu, QFileDialog,
-    QGraphicsDropShadowEffect, QSizePolicy, QTabWidget,
+    QGraphicsDropShadowEffect, QTabWidget,
     QDialog, QListWidget, QListWidgetItem, QWidgetAction, QLineEdit,
     QMessageBox, QProgressBar, QStackedWidget, QSplashScreen,
 )
 
-from utils.git import (
+from UTILS.git import (
     is_repo, get_current_branch, list_branches, pull, push,
     checkout, create_branch, has_remote,
 )
-from utils.git_utils import GitUtils
+from UTILS.git_utils import GitUtils
 
 MIME_PANEL = "application/x-ui-panel"
 SHOW_SPLASH = False  # splash + chime de inicio
@@ -57,7 +52,7 @@ TERMINAL_H = 300
 COLLAPSED_W = 30
 
 ICONOS_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "iconos")
+    os.path.dirname(os.path.abspath(__file__)), "iconos")
 CHEVRON_SVG = os.path.join(ICONOS_DIR, "flecha_abajo.svg")
 
 
@@ -521,10 +516,19 @@ class TermEdit(QPlainTextEdit):
 
 
 class TerminalTab(QWidget):
-    """Una pestaña de terminal real: zsh sobre un pty, escribís directo."""
+    """Una pestaña de terminal real: shell sobre un pty, escribís directo.
+
+    El proceso/shell lo maneja un TerminalBackend (UTILS/TERMINAL) —
+    UnixTerminalBackend en macOS/Linux, WindowsTerminalBackend (ConPTY)
+    en Windows. Este widget es solo UI: pyte emula la terminal y
+    renderiza; los bytes llegan por señal desde el thread lector del
+    backend.
+    """
 
     text_received = Signal(str)
-    finished = Signal(int)  # código de salida
+    finished = Signal(int)      # código de salida
+    _data_in = Signal(bytes)    # puente thread lector → UI
+    _exit_in = Signal(int)      # idem para el fin de la shell
 
     def __init__(self, cwd=None, parent=None):
         super().__init__(parent)
@@ -537,35 +541,7 @@ class TerminalTab(QWidget):
         self.out.setPlaceholderText("Terminal… (escribí acá)")
         self.out.send_data.connect(self.proc_write)
         v.addWidget(self.out)
-        if _pty is None:
-            # Sin pty (Windows): la terminal integrada no está disponible
-            self._alive = False
-            self.pid = self.fd = self.notifier = self._screen = None
-            self._scrollback = []
-            self.out.setReadOnly(True)
-            self.out.setPlaceholderText(
-                "Terminal no disponible en esta plataforma "
-                "(pty solo existe en macOS/Linux).")
-            return
-        # Pty: shell real con edición de línea, historial y tab-completion
-        self.pid, self.fd = _pty.fork()
-        if self.pid == 0:  # hijo: zsh interactivo en el pty
-            os.environ["TERM"] = "xterm-256color"
-            if cwd and os.path.isdir(cwd):
-                try:
-                    os.chdir(cwd)
-                except OSError:
-                    pass
-            try:
-                os.execv("/bin/zsh", ["zsh", "-i"])
-            except Exception:
-                os._exit(1)
-        try:
-            import fcntl, termios, struct
-            fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
-                        struct.pack("HHHH", 30, 120, 0, 0))
-        except OSError:
-            pass
+        self._scrollback = []
         # Emulación de terminal real (pyte): \r, cursor, clear, colores…
         try:
             import pyte
@@ -573,29 +549,31 @@ class TerminalTab(QWidget):
             self._stream = pyte.ByteStream(self._screen)
         except ImportError:
             self._screen = None
-        self._scrollback = []
-        self.notifier = QSocketNotifier(self.fd, QSocketNotifier.Read, self)
-        self.notifier.activated.connect(self._read)
-        self._alive = True
+        # Backend de plataforma (interfaz común TerminalBackend)
+        from UTILS.terminal import create_backend
+        self.backend = create_backend()
+        self.backend.on_data = self._data_in.emit   # emit es thread-safe
+        self.backend.on_exit = self._exit_in.emit
+        self._data_in.connect(self._feed)
+        self._exit_in.connect(self._on_exit)
+        if not self.backend.spawn(cwd):
+            self.out.setReadOnly(True)
+            self.out.setPlaceholderText(
+                "Terminal no disponible: en Windows instalá pywinpty "
+                "(pip install pywinpty); en macOS/Linux hace falta pty.")
 
     def update_winsize(self):
         """Ajusta cols/rows del pty al tamaño real del widget (para que ls
         y los prompts usen el ancho correcto)."""
-        if not self._alive:
+        if not self.backend.is_alive():
             return
-        try:
-            import fcntl, termios, struct
-            fm = self.out.fontMetrics()
-            cols = max(20, self.out.viewport().width()
-                       // max(1, fm.horizontalAdvance("M")))
-            rows = max(5, self.out.viewport().height() // max(1, fm.lineSpacing()))
-            fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
-                        struct.pack("HHHH", rows, cols, 0, 0))
-            if self._screen is not None:
-                self._screen.resize(rows, cols)
-            os.killpg(os.getpgid(self.pid), _signal.SIGWINCH)
-        except (OSError, ProcessLookupError):
-            pass
+        fm = self.out.fontMetrics()
+        cols = max(20, self.out.viewport().width()
+                   // max(1, fm.horizontalAdvance("M")))
+        rows = max(5, self.out.viewport().height() // max(1, fm.lineSpacing()))
+        self.backend.resize(cols, rows)
+        if self._screen is not None:
+            self._screen.resize(rows, cols)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -605,19 +583,8 @@ class TerminalTab(QWidget):
         super().showEvent(e)
         QTimer.singleShot(0, self.update_winsize)
 
-    def _read(self):
-        try:
-            data = os.read(self.fd, 65536)
-        except OSError:
-            data = b""
-        if not data:
-            # La shell cerró el pty → terminó
-            if self._alive:
-                self._alive = False
-                self.notifier.setEnabled(False)
-                self.out.appendPlainText("— shell terminada —")
-                self.finished.emit(0)
-            return
+    def _feed(self, data):
+        """(hilo UI) Bytes crudos del backend → pyte → render."""
         text = _ANSI_RE.sub("", data.decode("utf-8", "replace"))
         if self._screen is not None:
             try:
@@ -625,7 +592,7 @@ class TerminalTab(QWidget):
                 self._render()
             except Exception as ex:
                 # nunca romper el loop de la terminal: va al hook global
-                # (loguea a crash.log, status bar, y no repite el spam)
+                # (loguea a CRASH.LOG, status bar, y no repite el spam)
                 sys.excepthook(type(ex), ex, ex.__traceback__)
         else:
             self.out.appendPlainText(text.rstrip())
@@ -656,7 +623,8 @@ class TerminalTab(QWidget):
         cur.movePosition(QTextCursor.End)
         self.out.setTextCursor(cur)
 
-    def _on_fin(self, code, _status):
+    def _on_exit(self, code):
+        """(hilo UI) La shell terminó."""
         self.out.appendPlainText(f"— shell terminada (código {code}) —")
         self.finished.emit(code)
 
@@ -664,32 +632,13 @@ class TerminalTab(QWidget):
         self.proc_write(cmd + "\r")
 
     def proc_write(self, data):
-        if not self._alive:
-            return
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        try:
-            os.write(self.fd, data)
-        except OSError:
-            self._alive = False
+        self.backend.write(data)
 
     def is_running(self):
-        return self._alive
+        return self.backend.is_alive()
 
     def kill(self):
-        if self._alive:
-            try:
-                os.killpg(os.getpgid(self.pid), _signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-            self._alive = False
-        if self.fd is not None:
-            try:
-                os.close(self.fd)
-            except OSError:
-                pass
-        if self.notifier is not None:
-            self.notifier.setEnabled(False)
+        self.backend.kill()
 
 
 class TerminalOverlay(QFrame):
@@ -1100,7 +1049,7 @@ class TopBar(QFrame):
     # ---- run configurations ----
     def load_run_configs(self):
         """Carga las run configs del proyecto desde .run_configs.json."""
-        from utils.run_configs import load_configs
+        from UTILS.run_configs import load_configs
         self.run_configs = load_configs(self.repo_path) if self.repo_path else []
         if self.run_configs:
             self._run_current = self.run_configs[0]["name"]
@@ -1145,7 +1094,7 @@ class TopBar(QFrame):
 
     # ---- carpeta ----
     def set_folder(self, path):
-        from utils.recents import add_recent
+        from UTILS.recents import add_recent
         # normalizar: una "/" final dejaba basename()="" y el botón sin nombre
         self.repo_path = os.path.normpath(path) if path else ""
         name = os.path.basename(self.repo_path) if self.repo_path else "Sin carpeta"
@@ -1163,8 +1112,8 @@ class TopBar(QFrame):
     def _build_projects_menu(self):
         """Dropdown único del proyecto: acciones arriba, luego las
         sesiones abiertas y los proyectos recientes (estilo Windsurf)."""
-        from utils.recents import load_recents
-        from utils.sessions import load_sessions
+        from UTILS.recents import load_recents
+        from UTILS.sessions import load_sessions
         menu = QMenu(self)
         menu.setObjectName("projMenu")
 
@@ -1227,8 +1176,8 @@ class TopBar(QFrame):
 
     def _remove_project(self, menu, act, path):
         """✕ de una fila: quita la carpeta de recientes y sesiones."""
-        from utils.recents import remove_recent
-        from utils.sessions import remove_session
+        from UTILS.recents import remove_recent
+        from UTILS.sessions import remove_session
         remove_recent(path)
         remove_session(path)
         menu.removeAction(act)
@@ -1287,7 +1236,7 @@ class TopBar(QFrame):
         v.addLayout(brow)
 
         def _do_clone():
-            from utils.git import clone
+            from UTILS.git import clone
             url = url_edit.text().strip()
             dest = os.path.expanduser(dest_edit.text().strip())
             if not url or not dest:
@@ -1312,8 +1261,8 @@ class TopBar(QFrame):
     def _show_projects_popup(self):
         """Abre un diálogo con todos los proyectos previos y permite
         abrir una nueva instancia en cualquiera de ellos."""
-        from utils.sessions import load_sessions
-        from utils.recents import load_recents
+        from UTILS.sessions import load_sessions
+        from UTILS.recents import load_recents
         dlg = ProjectsDialog(self, self.repo_path, load_sessions(), load_recents())
         if dlg.exec() and dlg.selected_path:
             if dlg.property("open_here"):
@@ -1598,13 +1547,12 @@ class BottomBar(QFrame):
             "Clic para ver y matar procesos 1 a 1")
         self.lbl_ram.setCursor(Qt.PointingHandCursor)
         h.addWidget(self.lbl_ram)
-        self._ram_timer = QTimer(self)
-        self._ram_timer.timeout.connect(self._update_ram)
-        self._ram_timer.start(3000)
-        self._update_ram()
+        self.lbl_ram.setText("🐏 —")
+        # La RAM la publica el servicio sys-info (CORE/services.py):
+        # corre en su propio thread y emite ram_mb → set_ram().
 
-    def _update_ram(self):
-        mb = _process_tree_rss_mb()
+    def set_ram(self, mb):
+        """Slot del servicio sys-info (llega encolado al hilo UI)."""
         if mb >= 1024:
             self.lbl_ram.setText(f"🐏 {mb/1024:.1f} GB")
         else:
@@ -1802,15 +1750,16 @@ class MainBody(QWidget):
         # El stash movió algo → refrescar grafo y lista de cambios
         self.stash_panel.stash_changed.connect(self.git_panel.refresh)
 
-        # ---- Listener central del repo (listeners/git_listener.py) ----
-        # Vigila la carpeta + .git y avisa a los componentes suscriptos
-        # cuando cambia el status o la rama (incl. cambios externos).
-        from listeners import GitListener
-        self.git_listener = GitListener(self)
+        # ---- Listener central del repo: servicio en su propio thread
+        # (UTILS/CORE-SERVICES). Los `git status` cada 2s ya no bloquean la
+        # UI y el monitor de tareas puede start/stop/restart del servicio.
+        from UTILS.core_services.services import GitWatchService
+        self.git_service = GitWatchService(self)
+        self.git_listener = self.git_service.worker  # señales siguen igual
         for comp in (self.changes_panel.refresh,
                      self.git_panel.refresh,
                      self.stash_panel.refresh):
-            self.git_listener.subscribe(comp)
+            self.git_service.subscribe(comp)
 
         # Panel de archivos en zona derecha (independiente, oculto al inicio)
         self.files_panel_right = FilesPanel()
@@ -1878,6 +1827,25 @@ class MainBody(QWidget):
         # Terminal flotante (con pestañas)
         self.terminal = TerminalOverlay(self)
         self.terminal.hide()
+
+        # Log flotante de NG-Studio (mismo overlay, contenido = AppLog)
+        from UI.panels.log_overlay import LogOverlay
+        self.log_overlay = LogOverlay(self)
+        self.log_overlay.hide()
+
+        # Servicio de info de sistema (RAM del IDE + hijos) en su thread
+        from UTILS.core_services.services import SysInfoService
+        self.sysinfo_service = SysInfoService(self)
+
+        # Watcher + análisis de archivos del workspace en su thread.
+        # Los dos FilesPanel solo se suscriben: changed → repaint,
+        # diffs_ready → badges, busy → indicador de escaneo.
+        from UTILS.core_services.services import FileWatchService
+        self.file_watch = FileWatchService(self)
+        for fp in (self.files_panel, self.files_panel_right):
+            self.file_watch.subscribe_changed(fp.repaint)
+            self.file_watch.subscribe_diffs(fp.apply_diffs)
+            self.file_watch.subscribe_busy(fp.set_scanning)
 
         # Conectar play de ambos paneles → terminal
         self.files_panel.run_requested.connect(self._run_file)
@@ -2169,7 +2137,7 @@ class MainBody(QWidget):
             project = p.top_bar.repo_path
         if not project:
             return
-        from utils.run_configs import add_config
+        from UTILS.run_configs import add_config
         name = os.path.splitext(os.path.basename(path))[0]
         add_config(project, name, path)
         # Recargar el menú del top bar
@@ -2186,6 +2154,8 @@ class MainBody(QWidget):
     def _place_terminal(self):
         self.terminal.setGeometry(
             8, self.height() - 300 - 8, self.width() - 16, 300)
+        self.log_overlay.setGeometry(
+            8, self.height() - 300 - 8, self.width() - 16, 300)
 
     def toggle_terminal(self, show=None):
         if show is None:
@@ -2200,6 +2170,17 @@ class MainBody(QWidget):
         else:
             self.terminal.hide()
 
+    def toggle_log(self, show=None):
+        """Muestra/oculta el overlay flotante con el log de la app."""
+        if show is None:
+            show = not self.log_overlay.isVisible()
+        if show:
+            self._place_terminal()
+            self.log_overlay.show()
+            self.log_overlay.raise_()
+        else:
+            self.log_overlay.hide()
+
     def set_root(self, path):
         """Actualiza ambos paneles de archivos y chat con la nueva carpeta."""
         self.files_panel.set_root(path)
@@ -2211,8 +2192,12 @@ class MainBody(QWidget):
         self.stash_panel.set_repo(path)
         self.planner_panel.set_repo(path)
         self.planner_panel_right.set_repo(path)
-        if hasattr(self, "git_listener"):
-            self.git_listener.set_repo(path)
+        if hasattr(self, "git_service"):
+            # va por señal → set_repo corre en el thread del servicio
+            self.git_service.set_repo(path)
+        if hasattr(self, "file_watch"):
+            # idem: watcher + análisis corren en el thread del servicio
+            self.file_watch.set_root(path)
 
 
 class UIMainWindow(QMainWindow):
@@ -2223,8 +2208,7 @@ class UIMainWindow(QMainWindow):
         self.setWindowTitle("NG-Studio")
         self.resize(1400, 860)
         # Icono de la ventana
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "iconos", "app.svg")
+        icon_path = os.path.join(ICONOS_DIR, "app.svg")
         if os.path.exists(icon_path):
             from PySide6.QtGui import QIcon
             self.setWindowIcon(QIcon(icon_path))
@@ -2261,9 +2245,11 @@ class UIMainWindow(QMainWindow):
                  os.path.join(ICONOS_DIR, "git_branch.svg")),
                 ("term", "", "Terminal (pestañas)",
                  os.path.join(ICONOS_DIR, "terminal_w.svg")),
+                ("monitor", "▦", "Monitor de tareas — servicios", None),
+                ("log", "≣", "Log de NG-Studio (flotante)", None),
             ),
             checked={"files"},
-            pinned_bottom=("git", "term"))
+            pinned_bottom=("git", "term", "monitor", "log"))
         self.hotbar_right = HotBar(
             side="right",
             buttons=(
@@ -2284,6 +2270,21 @@ class UIMainWindow(QMainWindow):
         # Bottom bar (30px, todo el ancho)
         self.bottom_bar = BottomBar()
         root.addWidget(self.bottom_bar)
+        # ---- Servicios en segundo plano (CORE) ----
+        from UTILS.core_services.service_manager import ServiceManager
+        from UI.panels.monitor_panel import MonitorPanel
+        self.services = ServiceManager(self)
+        self.services.register(self.body.git_service)
+        self.services.register(self.body.sysinfo_service)
+        self.services.register(self.body.file_watch)
+        # Monitor de tareas: panel en la zona izquierda
+        self.monitor_panel = MonitorPanel(self.services)
+        self.body.left_zone.add_panel_widget(
+            "monitor", "Servicios", self.monitor_panel)
+        self.body.left_zone.toggle("monitor", False)
+        # RAM del bottom bar ← servicio sys-info (thread aparte)
+        self.body.sysinfo_service.ram_signal.connect(
+            self.bottom_bar.set_ram)
         # Hotbar izquierda → zona izquierda (independiente)
         self.hotbar_left.btns["files"].toggled.connect(
             lambda on: self.body.left_zone.toggle("files", on))
@@ -2304,6 +2305,11 @@ class UIMainWindow(QMainWindow):
             lambda on: (self.body.left_zone.toggle("git", on),
                         QTimer.singleShot(0, self.body.ensure_git_width)
                         if on else None))
+        # Monitor de tareas (panel) + log de la app (overlay flotante)
+        self.hotbar_left.btns["monitor"].toggled.connect(
+            lambda on: self.body.left_zone.toggle("monitor", on))
+        self.hotbar_left.btns["log"].toggled.connect(
+            lambda on: self.body.toggle_log(on))
         # Hotbar derecha → zona derecha (independiente)
         self.hotbar_right.btns["files"].toggled.connect(
             lambda on: self.body.right_zone.toggle("files", on))
@@ -2340,8 +2346,8 @@ class UIMainWindow(QMainWindow):
         self.body.files_panel.file_activated.connect(self._on_file_activated)
         self.body.files_panel_right.file_activated.connect(self._on_file_activated)
         # Restaurar última carpeta usada (de recents; o ~/Desktop si no hay)
-        from utils.sessions import add_session
-        from utils.recents import load_recents
+        from UTILS.sessions import add_session
+        from UTILS.recents import load_recents
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
         recents = load_recents()
         start_dir = (recents[0] if recents else
@@ -2350,9 +2356,35 @@ class UIMainWindow(QMainWindow):
         self.top_bar.set_folder(start_dir)
         self.body.set_root(start_dir)
         add_session(start_dir)
-        # Matar shells de la terminal al cerrar
+        # Al cerrar: matar TODO lo que corre en segundo plano —
+        # workers de IA, ffmpeg de grabación, shells de la terminal
+        # y los QThreads de los servicios. No queda nada corriendo.
+        # El camino principal es closeEvent → _shutdown (antes de que
+        # la ventana se cierre); aboutToQuit queda como red de
+        # seguridad para salidas que no pasan por la X (app.quit(),
+        # Ctrl+C). _shutdown es idempotente.
         app = QApplication.instance()
-        app.aboutToQuit.connect(self.body.terminal.kill_all)
+        app.aboutToQuit.connect(self._shutdown)
+        # Boot queue: servicios en segundo plano, escalonados
+        # (el progreso se ve en el monitor de tareas)
+        self.services.start_all()
+
+    def _shutdown(self):
+        """Apaga workers, procesos hijos y servicios al cerrar."""
+        for chat in (self.body.chat_panel, self.body.chat_panel_right):
+            try:
+                chat.stop()          # frena el worker de IA (flag _stop)
+                chat._stop_rec()     # mata ffmpeg si está grabando
+                w = getattr(chat, "worker", None)
+                if w is not None and w.isRunning():
+                    w.wait(2000)     # que el thread termine de verdad
+            except Exception:
+                pass
+        try:
+            self.body.terminal.kill_all()
+        except Exception:
+            pass
+        self.services.stop_all()
 
     # ---- navegación atrás/adelante ----
     def push_history(self, location):
@@ -2381,7 +2413,7 @@ class UIMainWindow(QMainWindow):
 
     # ---- carpeta ----
     def _on_folder_changed(self, path):
-        from utils.sessions import add_session
+        from UTILS.sessions import add_session
         self.body.set_root(path)
         add_session(path)
         self.statusBar().showMessage(f"Carpeta: {path}", 3000)
@@ -2391,15 +2423,23 @@ class UIMainWindow(QMainWindow):
 
         (Las sesiones listan solo instancias vivas; la carpeta queda en
         recents para restaurarla al próximo arranque.)
+
+        Orden de cierre: PRIMERO mueren todos los servicios, workers,
+        threads y subprocesos (_shutdown bloquea hasta que terminan) —
+        la UI no se cierra mientras haya algo corriendo. DESPUÉS se
+        cierra la ventana.
         """
-        from utils.sessions import remove_session
+        from UTILS.sessions import remove_session
         if self.top_bar.repo_path:
             remove_session(self.top_bar.repo_path)
+        self.statusBar().showMessage("Cerrando servicios…")
+        self.repaint()                 # que se vea antes de bloquear
+        self._shutdown()
         super().closeEvent(e)
 
     def _open_new_window(self, path):
         """Abre una nueva instancia del IDE en otra carpeta."""
-        from utils.sessions import add_session
+        from UTILS.sessions import add_session
         add_session(path)
         w = UIMainWindow()
         w.top_bar.set_folder(path)
@@ -2525,7 +2565,7 @@ class UIMainWindow(QMainWindow):
                 self.top_bar.set_run_running(True)
             return
         # Buscar la config seleccionada (dict con type/path/script/command)
-        from utils.run_configs import get_config, build_command
+        from UTILS.run_configs import get_config, build_command
         cfg = get_config(self.top_bar.repo_path, name)
         if not cfg:
             self.statusBar().showMessage(f"⚠ Config '{name}' no encontrada", 3000)
@@ -2563,12 +2603,12 @@ _SEEN_ERRORS = set()
 
 def _excepthook(exc_type, exc, tb):
     """Red de seguridad global: ninguna excepción suelta puede crashear
-    ni spammear la app — se loguea a ng-studio/crash.log, se muestra en
-    la status bar, y el mismo error solo se imprime una vez."""
+    ni spammear la app — se loguea a NG-STUDIO-STUFF/CRASH.LOG, se
+    muestra en la status bar, y el mismo error solo se imprime una vez."""
     import traceback
     try:
         log = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "ng-studio", "crash.log")
+            os.path.abspath(__file__))), "NG-STUDIO-STUFF", "CRASH.LOG")
         os.makedirs(os.path.dirname(log), exist_ok=True)
         with open(log, "a", encoding="utf-8") as f:
             f.write("".join(traceback.format_exception(exc_type, exc, tb))
@@ -2582,6 +2622,11 @@ def _excepthook(exc_type, exc, tb):
         return                      # mismo error repetido → silencio
     _SEEN_ERRORS.add(key)
     sys.__excepthook__(exc_type, exc, tb)   # una vez a consola (debug)
+    try:
+        from UTILS.core_services.app_log import log as _alog
+        _alog(f"{exc_type.__name__}: {exc}", "excepthook")
+    except Exception:
+        pass
     try:
         w = QApplication.activeWindow()
         if w is not None and hasattr(w, "statusBar"):
@@ -2680,18 +2725,31 @@ def _play_startup_sound():
             return
 
 
-def main():
+def main(params=None):
+    """Entry point. `params` (dict opcional) permite sobreescribir
+    opciones de arranque sin tocar el código:
+
+        show_splash (bool)  → splash + chime de inicio (default: SHOW_SPLASH)
+    """
+    params = params or {}
+    show_splash = bool(params.get("show_splash", SHOW_SPLASH))
     sys.excepthook = _excepthook
     app = QApplication(sys.argv)
-    app.setStyleSheet(STYLE)
+    app.setStyleSheet(STYLE.replace(
+        "url(iconos/", "url(" + ICONOS_DIR.replace(os.sep, "/") + "/"))
+    from UTILS.core_services.app_log import (
+        log as _alog, install_freeze_watchdog)
+    _alog("NG-Studio iniciando", "core")
+    # Watchdog de freeze: si el hilo UI se traba >2s vuelca el stack
+    # exacto a CRASH.LOG (también atrapa freezes durante el __init__).
+    _freeze_wd = install_freeze_watchdog(app)
     # Icono de la app
     from PySide6.QtGui import QIcon
-    icon_path = os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "iconos", "app.svg")
+    icon_path = os.path.join(ICONOS_DIR, "app.svg")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     # Splash: negro con dorado, sobre la ventana principal
-    if SHOW_SPLASH:
+    if show_splash:
         _play_startup_sound()
         splash = QSplashScreen(_splash_pixmap())
         splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -2699,9 +2757,32 @@ def main():
         app.processEvents()
     w = UIMainWindow()
     w.show()
-    if SHOW_SPLASH:
+    # Maximizar DESPUÉS de show(): en Windows, show() sobre una ventana
+    # ya maximizada le restaura la geometría normal (quedaba chica).
+    _fit_to_largest_screen(w)
+    if show_splash:
         QTimer.singleShot(1500, lambda: splash.finish(w))
     sys.exit(app.exec())
+
+
+def _fit_to_largest_screen(w):
+    """Maximiza la ventana en el monitor más grande.
+
+    Con varios monitores elige el de mayor área disponible (sin contar
+    la barra de tareas), mueve la ventana ahí y la maximiza: ocupa el
+    ancho y alto máximos de ese monitor.
+    """
+    app = QApplication.instance()
+    screens = app.screens() if app else []
+    if not screens:
+        return
+    biggest = max(
+        screens,
+        key=lambda s: (s.availableGeometry().width()
+                       * s.availableGeometry().height()))
+    # Llevar la ventana al monitor elegido y maximizar ahí
+    w.move(biggest.availableGeometry().topLeft())
+    w.showMaximized()
 
 
 if __name__ == "__main__":

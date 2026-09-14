@@ -23,6 +23,30 @@ Un IDE local con IA construido en Python y Qt que se conecta a proveedores de IA
 - **`contexto.txt`**: archivo de contexto persistente por proyecto
 - **`indexado.txt`**: mapa del proyecto generado por la IA
 - **Sonidos**: feedback de audio al grabar, enviar y recibir respuestas
+- **Servicios en segundo plano**: el trabajo pesado (watchers de git/archivos, poll de RAM) corre en `QThread`s propios — si un servicio se cuelga, la UI no se congela
+- **Monitor de tareas**: panel "Servicios" con estado, heartbeat y botones start/stop/restart por servicio (botón ▦ en la hotbar)
+- **Log interno**: overlay flotante con el log de la app — eventos de servicios, boot queue y excepciones (botón ≣ en la hotbar)
+- **Boot queue progresiva**: los servicios arrancan escalonados tras mostrar la ventana; el progreso se ve en el monitor
+
+## Arquitectura de servicios
+
+Cada servicio sigue el patrón **Service/Worker**: el `Service` vive en el hilo UI y controla el ciclo de vida; el `Worker` es un `QObject` que vive en el `QThread` y hace el trabajo real.
+
+```
+UI thread                          QThread "file-watch"
+───────────                        ────────────────────
+FileWatchService ──señal──▶        FileWatchWorker
+  · start/stop/restart               · QFileSystemWatcher
+  · heartbeat/watchdog               · debounce 300ms
+  · estado p/ MonitorPanel           · daemon threads (walk/diffs)
+  · subscribe_*()        ◀──señal──    · changed/diffs_ready/busy
+```
+
+- **El Service nunca se mueve de thread** — la UI habla siempre con él y él traduce a señales hacia el worker.
+- **El Worker no sabe que es un servicio** — es un `QObject` común, testeable sin `ServiceManager`.
+- Si el worker se cuelga, el Service lo detecta (watchdog) y lo reporta — el worker no puede reportarse a sí mismo.
+
+Servicios actuales (`UTILS/CORE-SERVICES/`): `git-watch` (listener de git), `sys-info` (RAM del IDE), `file-watch` (watcher + análisis de archivos del workspace).
 
 ## Instalación
 
@@ -40,7 +64,13 @@ brew install ffmpeg
 ## Uso
 
 ```bash
-python chat_ia.py
+python ng-studio-app.py
+```
+
+Con splash de inicio (pantalla + sonido):
+
+```bash
+python ng-studio-app.py --splash
 ```
 
 O doble clic en `run.command` (macOS).
